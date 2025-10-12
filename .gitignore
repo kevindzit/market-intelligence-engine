@@ -1,0 +1,47 @@
+# Byte-2-Bite .gitignore
+# Python files and folders to ignore
+
+# Bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.env/
+.venv/
+
+# IDE settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+
+# Test and coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# Environment variables
+*.env
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# MySQL or SQLite databases
+*.db
+*.sqlite3
