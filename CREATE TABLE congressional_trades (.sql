@@ -9,4 +9,10 @@ CREATE TABLE congressional_trades (
     amount_range VARCHAR(100),
     report_url TEXT,
     scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    ALTER TABLE congressional_trades
+    ADD CONSTRAINT unique_transaction UNIQUE (filer_name, transaction_date, ticker, transaction_type, amount_range);
 );
+
+
+ALTER TABLE congressional_trades
+ADD CONSTRAINT unique_transaction UNIQUE (filer_name, transaction_date, ticker, transaction_type, amount_range);
