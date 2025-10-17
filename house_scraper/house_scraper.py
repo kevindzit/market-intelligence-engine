@@ -47,11 +47,43 @@ def clean_data(transactions):
     cleaned = []
     for t in transactions:
         try:
-            t['filing_date'] = datetime.strptime(re.search(r'(\d{1,2}/\d{1,2}/\d{4})', t['filing_date']).group(1), "%m/%d/%Y").date()
-            t['transaction_date'] = datetime.strptime(re.search(r'(\d{1,2}/\d{1,2}/\d{4})', t['transaction_date']).group(1), "%m/%d/%Y").date()
-            ticker = t['ticker'].split('\n')[0] if t['ticker'] else "N/A"
-            t['ticker'] = re.sub(r'\s*\(.*\)', '', ticker).strip() if ticker else "N/A"
-            t['filer_name'] = t['filer_name'].replace("Hon. ", "").replace("Mr. ", "").replace("Ms. ", "").split('(')[0].strip()
+            # --- Filing Date ---
+            # It might already be a date object from the XML part, or a string from the PDF/web scrape
+            filing_date_str = str(t.get('filing_date', ''))
+            filing_date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', filing_date_str)
+            if filing_date_match:
+                t['filing_date'] = datetime.strptime(filing_date_match.group(1), "%m/%d/%Y").date()
+            elif not isinstance(t.get('filing_date'), datetime.date):
+                 raise ValueError("Filing date format is invalid")
+
+            # --- Transaction Date ---
+            # This is the most likely field to be messy from PDFs
+            transaction_date_str = str(t.get('transaction_date', ''))
+            date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', transaction_date_str)
+            
+            # If date not found, check other fields where it might be misplaced (like amount_range)
+            if not date_match:
+                amount_str = str(t.get('amount_range', ''))
+                date_match = re.search(r'(\d{1,2}/\d{1,2}/\d{4})', amount_str)
+
+            if not date_match:
+                raise ValueError("Transaction date could not be found or parsed")
+                
+            t['transaction_date'] = datetime.strptime(date_match.group(1), "%m/%d/%Y").date()
+
+            # --- Ticker ---
+            ticker = t.get('ticker')
+            if ticker and isinstance(ticker, str):
+                ticker = ticker.split('\n')[0]
+                t['ticker'] = re.sub(r'\s*\(.*\)', '', ticker).strip() or "N/A"
+            else:
+                t['ticker'] = "N/A"
+
+            # --- Filer Name ---
+            filer_name = t.get('filer_name')
+            if filer_name and isinstance(filer_name, str):
+                t['filer_name'] = filer_name.replace("Hon. ", "").replace("Mr. ", "").replace("Ms. ", "").split('(')[0].strip()
+
             cleaned.append(t)
         except Exception as e:
             logging.error(f"Could not clean transaction, skipping. Error: {e}\nData: {t}")
