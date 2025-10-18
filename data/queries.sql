@@ -19,6 +19,10 @@ SELECT * FROM congressional_trades WHERE ticker = 'ORCL';
 SELECT DISTINCT filer_name FROM congressional_trades;
 
 
+DELETE FROM congressional_trades
+WHERE id BETWEEN 55 AND 63;
+
+
 
 -- 6. Delete a single, specific trade by its ID
 -- !! Always use a 'WHERE' clause when deleting, or you will delete everything.
@@ -32,6 +36,6 @@ SELECT DISTINCT filer_name FROM congressional_trades;
 
 
 
-SELECT pg_get_tabledef(oid)
-FROM pg_class
-WHERE relname = 'congressional_trades';
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_name = 'congressional_trades';
