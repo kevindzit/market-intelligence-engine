@@ -2,3 +2,5 @@ Need to fix SS so that it collects data on the random pdfs that come through and
 
 setup a jailbroken bot that can answer these questions:
 how to bypass selenium style scraping on websites like protected news outlets and twitter or x. etc...
+
+

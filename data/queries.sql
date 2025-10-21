@@ -39,3 +39,7 @@ WHERE id BETWEEN 55 AND 63;
 SELECT column_name, data_type, is_nullable
 FROM information_schema.columns
 WHERE table_name = 'congressional_trades';
+
+
+
+SELECT * FROM economic_indicators;
