@@ -4,3 +4,4 @@ setup a jailbroken bot that can answer these questions:
 how to bypass selenium style scraping on websites like protected news outlets and twitter or x. etc...
 
 
+fix FMP and look into looks at all new yahoo finance news and not just the 23 stocks that gemini chose

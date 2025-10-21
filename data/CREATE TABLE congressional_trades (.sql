@@ -43,3 +43,24 @@ CREATE TABLE IF NOT EXISTS sec_filings (
     scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(filing_url)
 );
+
+
+company profiles table 10-20-25 chat llm2
+
+-- This table will store fundamental company data fetched from the FMP API.
+-- The "symbol" column is the primary way to identify a company and must be unique.
+CREATE TABLE company_profiles (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(10) UNIQUE NOT NULL,
+    company_name VARCHAR(255),
+    exchange VARCHAR(50),
+    industry VARCHAR(255),
+    sector VARCHAR(255),
+    market_cap BIGINT,
+    beta NUMERIC(10, 4),
+    pe_ratio NUMERIC(10, 4),
+    eps NUMERIC(10, 4),
+    website TEXT,
+    last_updated TIMESTAMP WITH TIME ZONE
+);
+

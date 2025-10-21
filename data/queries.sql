@@ -1,4 +1,7 @@
-SELECT * FROM congressional_trades LIMIT 25;
+SELECT * FROM congressional_trades;
+SELECT * FROM sec_filings;
+SELECT * FROM company_profiles;
+
 
 
 -- 2. Count the total number of trades saved
@@ -43,3 +46,5 @@ WHERE table_name = 'congressional_trades';
 
 
 SELECT * FROM economic_indicators;
+
+SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
