@@ -31,21 +31,33 @@ try:
     if response.status_code != 200:
         print("Ollama server: NOT responding. Run 'ollama serve'")
         exit()
-    
+
     print("Ollama server: Connected")
     models = response.json().get('models', [])
-    print(f"Available models: {[m['name'] for m in models]}")
-    
-    # Use simpler, faster models
-    ollama_phi3 = LLM(
-        model="ollama/phi3:mini",
+    model_names = [m['name'] for m in models]
+    print(f"Available models: {model_names}")
+
+    # Use finance-optimized models for RTX 4090/5090
+    # Triage: Fast 8B model for quick classification
+    triage_model = "0xroyce/plutus" if "0xroyce/plutus:latest" in model_names else "llama3:8b"
+
+    # Research: Finance-trained 8B model
+    research_model = "martain7r/finance-llama-8b" if "martain7r/finance-llama-8b:latest" in model_names else "llama3:8b"
+
+    # Master reasoning: 32B model (future - needs 4090/5090)
+    reasoning_model = "qwen2.5:32b" if "qwen2.5:32b" in model_names else None
+
+    ollama_triage = LLM(
+        model=f"ollama/{triage_model}",
         base_url="http://localhost:11434"
     )
-    ollama_llama3 = LLM(
-        model="ollama/llama3:8b",
+    ollama_research = LLM(
+        model=f"ollama/{research_model}",
         base_url="http://localhost:11434"
     )
-    
+
+    print(f"Triage model: {triage_model}")
+    print(f"Research model: {research_model}")
     print("Models: Ready")
 except Exception as e:
     print(f"Model error: {e}")
@@ -81,19 +93,19 @@ search_tool = DuckDuckGoSearchTool()
 triage_agent = Agent(
     role='Financial News Triage Specialist',
     goal='Classify news as "Investigate" or "Ignore" based on market impact.',
-    backstory='Expert at identifying market-moving news quickly and accurately.',
+    backstory='Expert at identifying market-moving news quickly and accurately. Trained on 394 finance books covering stock analysis, options trading, and technical analysis.',
     verbose=False,
     allow_delegation=False,
-    llm=ollama_phi3
+    llm=ollama_triage
 )
 
 research_agent = Agent(
     role='Financial News Analyst',
     goal='Write brief summaries of investigated news items.',
-    backstory='You write clear, concise summaries based on headlines and snippets provided.',
+    backstory='Financial analyst trained on 500k examples of financial QA, reasoning, and sentiment analysis. Expert at extracting actionable insights from market news.',
     verbose=False,
     allow_delegation=False,
-    llm=ollama_llama3,
+    llm=ollama_research,
     tools=[]  # No tools - just analyze the data provided
 )
 

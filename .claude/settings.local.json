@@ -17,7 +17,10 @@
       "Bash(cat:*)",
       "Bash(timeout 5 python:*)",
       "Bash(timeout 5 .venv/Scripts/python.exe:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(git mv:*)",
+      "Bash(pkill:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

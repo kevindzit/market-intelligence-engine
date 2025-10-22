@@ -1,0 +1,15 @@
+# Don't copy these into Docker image
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+logs/*.log
+outputs/*.txt
+chroma_db_news/
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore
+Retired/
+.vscode/

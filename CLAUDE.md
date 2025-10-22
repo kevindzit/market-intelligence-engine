@@ -25,11 +25,11 @@ Build a **100% free, fully autonomous trading bot** that:
 - Auto-deduplicates and stores in databases
 - No human intervention needed
 
-**2. AI Analysis (ai_analysis.py)**
+**2. AI Analysis (llm_analysis.py)**
 - CrewAI multi-agent system analyzes collected data
-- Triage Agent (phi3:mini) → filters important news
-- Research Agent (llama3:8b) → summarizes events
-- Master Agent (planned, deepseek-coder:33b) → generates trading signals
+- Triage Agent (0xroyce/plutus 8B or fallback to llama3:8b) → filters important news
+- Research Agent (martain7r/finance-llama-8b or fallback to llama3:8b) → summarizes events
+- Master Agent (planned, qwen2.5:32b) → generates trading signals
 
 **These run separately:** Orchestrator collects data continuously, AI analysis runs on-demand or scheduled.
 

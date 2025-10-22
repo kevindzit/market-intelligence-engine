@@ -1,17 +1,18 @@
 # Current Tasks
 
 ## Immediate
-- [ ] Let orchestrator run for a few hours to collect data
-- [ ] Test ai_analysis.py with collected data
-- [ ] Monitor logs for any errors
+- [ ] Pull financial models: ollama pull 0xroyce/plutus martain7r/finance-llama-8b qwen2.5:32b
+- [ ] Test llm_analysis.py with new financial models
+- [ ] Set up cloud GPU testing (RunPod RTX 4090)
 
 ## Short Term
-- [ ] Add more RSS news sources if needed
-- [ ] Enable web tools in ai_analysis.py (DuckDuckGo + scraper)
-- [ ] Fix House scraper PDF parsing issues (some transactions fail)
+- [ ] Deploy to cloud GPU for 3-month validation
+- [ ] Enable web tools in llm_analysis.py (DuckDuckGo + scraper)
+- [ ] Add SEC specialist agent (arcee-ai/llama3-sec) if using RTX 5090
+- [ ] Build performance tracking system
 
 ## Long Term
-- [ ] Add Master Reasoning Agent (deepseek-coder:33b)
-- [ ] Build backtesting system
+- [ ] Add Master Reasoning Agent (qwen2.5:32b)
+- [ ] Build backtesting system to validate signals
 - [ ] Integrate Alpaca paper trading API
-- [ ] Set up Windows Task Scheduler for automation
+- [ ] If validated: Buy RTX 5090 and build home server

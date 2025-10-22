@@ -17,7 +17,7 @@
 python orchestrator.py
 
 # Terminal 2: Run AI analysis (analyzes collected data)
-python ai_analysis.py
+python llm_analysis.py
 
 # Stop everything: Press Ctrl+C in orchestrator terminal
 ```
@@ -36,10 +36,10 @@ Manages 8 scrapers that collect data 24/7:
 
 All scrapers auto-deduplicate and save to databases.
 
-### AI Analysis (ai_analysis.py)
+### AI Analysis (llm_analysis.py)
 CrewAI agents analyze the collected data:
-1. **Triage Agent** (phi3:mini) - Classifies news as "Investigate" or "Ignore"
-2. **Research Agent** (llama3:8b) - Summarizes important news
+1. **Triage Agent** (Plutus 8B or phi3:mini) - Classifies news as "Investigate" or "Ignore"
+2. **Research Agent** (Finance-Llama-8B or llama3:8b) - Summarizes important news
 3. **Master Agent** (planned) - Generates trading signals
 
 ### Databases
