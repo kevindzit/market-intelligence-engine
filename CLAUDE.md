@@ -35,7 +35,7 @@ All scrapers run independently. Data auto-deduplicates via unique constraints.
 | Scraper | Command | Destination | Free Tier Limit |
 |---------|---------|-------------|-----------------|
 | **NewsAPI** | `python news_scrapers/newsapi_reader.py` | ChromaDB | 100 calls/day |
-| **RSS Aggregator** | `python news_scrapers/rss_aggregator.py` | ChromaDB | Unlimited (10 sources) |
+| **RSS Aggregator** | `python news_scrapers/rss_aggregator.py` | ChromaDB | Unlimited (9 sources) |
 | **Senate Trades** | `python senate_scraper/senate_scraper.py` | PostgreSQL | Unlimited |
 | **House Trades** | `python house_scraper/house_scraper.py` | PostgreSQL | Unlimited |
 | **FRED Economic** | `python data_api/fred_data_reader.py` | PostgreSQL | Unlimited |
@@ -79,3 +79,5 @@ All scrapers run independently. Data auto-deduplicates via unique constraints.
 - Keep architecture simple and maintainable for long-term server deployment
 - Avoid data bloat - use deduplication and cleanup strategies
 - Build for autonomous operation (no manual intervention needed)
+- Keep it simple but efficient and robust
+- always do research on stuff you dont know and think you should know if it means making stuff better

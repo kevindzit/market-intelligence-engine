@@ -1,0 +1,28 @@
+# Database packages
+psycopg2-binary>=2.9.9
+chromadb>=0.4.0
+
+# Web scraping packages
+selenium>=4.15.0
+webdriver-manager>=4.0.1
+beautifulsoup4>=4.12.2
+pdfplumber>=0.10.3
+
+# API and data packages
+requests>=2.31.0
+feedparser>=6.0.10
+schedule>=1.2.0
+newsapi-python>=0.2.7
+
+# AI and CrewAI packages
+crewai>=0.1.0
+crewai-tools>=0.1.0
+langchain>=0.1.0
+duckduckgo-search>=4.0.0
+
+# Financial data packages
+fredapi>=0.5.1
+yfinance>=0.2.32
+
+# Utilities
+python-dotenv>=1.0.0

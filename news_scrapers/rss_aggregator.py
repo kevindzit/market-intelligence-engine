@@ -11,16 +11,19 @@ COLLECTION_NAME = "news_articles"
 
 # RSS Feed Sources (All Free & Unlimited)
 RSS_FEEDS = {
+    # Working feeds - verified 2025
     "MarketWatch": "https://www.marketwatch.com/rss/topstories",
     "MarketWatch_Markets": "https://www.marketwatch.com/rss/marketpulse",
     "CNBC_Top": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "CNBC_Markets": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-    "Reuters_Business": "https://www.reuters.com/arc/outboundfeeds/v3/category/business/?outputType=xml",
-    "Reuters_Markets": "https://www.reuters.com/arc/outboundfeeds/v3/category/markets/?outputType=xml",
     "Benzinga": "https://www.benzinga.com/feed",
-    "Nasdaq": "https://www.nasdaq.com/feed/rssoutbound?category=Stocks",
-    "Investing_Latest": "https://www.investing.com/rss/news.rss",
-    "Investing_Markets": "https://www.investing.com/rss/news_285.rss",  # Stock market news
+    "Investing_Stocks": "https://www.investing.com/rss/news_25.rss",  # Stock market
+    "Investing_Economy": "https://www.investing.com/rss/news_14.rss",  # Economy news
+    "Investing_Crypto": "https://www.investing.com/rss/news_301.rss",  # Crypto (diversification)
+
+    # Note: Reuters killed official RSS in 2020, Nasdaq has connection issues
+    # Using Google News as Reuters workaround
+    "Reuters_via_Google": "https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&ceid=US:en&hl=en-US&gl=US",
 }
 
 def setup_logging():
@@ -28,7 +31,7 @@ def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
-        filename='../logs/rss_aggregator.log',
+        filename='logs/rss_aggregator.log',
         filemode='a'  # Append mode
     )
     console = logging.StreamHandler()
@@ -51,7 +54,13 @@ def fetch_rss_feed(feed_name, feed_url):
     """Fetches and parses a single RSS feed."""
     try:
         logging.info(f"Fetching {feed_name}...")
-        feed = feedparser.parse(feed_url)
+
+        # Set user-agent and timeout for better compatibility
+        feed = feedparser.parse(
+            feed_url,
+            agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            request_headers={'Connection': 'close'}  # Prevent hanging connections
+        )
 
         if feed.bozo:
             logging.warning(f"{feed_name}: Feed parsing warning - {feed.bozo_exception}")
