@@ -1,72 +1,38 @@
-# Current Tasks - Updated Oct 22, 2025
+# What to Do Next
 
-## PRIORITY 1: Build Crypto Bot (Where the Real Edge Is)
-
-### Immediate (This Week)
-- [ ] Research Twitter API free tier limits + alternatives
+## This Week
+- [ ] Research Twitter API (free tier limits) or Selenium scraping
 - [ ] Build Twitter scraper for meme coin mentions
 - [ ] Research Pump.fun API for new token launches
-- [ ] Research Solana DEX APIs (Raydium, Orca, Jupiter)
-- [ ] Set up crypto mentions database table (PostgreSQL)
+- [ ] Set up crypto_mentions table in PostgreSQL
 - [ ] Add Twitter scraper to config/scrapers.yaml
 
-### Next Week
-- [ ] Build sentiment analysis for crypto tweets
-- [ ] Create paper trading framework (log signals, calculate P&L)
-- [ ] Build performance tracking system (win rate, Sharpe ratio, drawdown)
-- [ ] Test crypto bot on historical Twitter data (if available)
+## Next Steps
+- [ ] Build sentiment analysis (use Finance-Llama 8B)
+- [ ] Create paper trading framework (log signals, track P&L)
+- [ ] Track metrics: win rate, Sharpe ratio, max drawdown
+- [ ] Research Solana DEX APIs (Raydium, Orca, Jupiter)
+- [ ] Expand to Discord/Telegram scraping
 
-## PRIORITY 2: Validation Period (Next 3 Months)
+## Stock Bot (Context Only - Low Priority)
+- [ ] Test llm_analysis.py with finance models (Plutus, Finance-Llama)
+- [ ] Enable web tools (DuckDuckGo + scraper)
+- [ ] Use stock data as context for crypto decisions
 
-### Month 1
-- [ ] Paper trade all crypto signals
-- [ ] Track metrics daily (win rate, P&L, etc.)
-- [ ] Iterate on sentiment analysis
-- [ ] Tune entry/exit timing
+## After 3 Months Validation
+- [ ] IF profitable: Buy RTX 5090 server ($5k)
+- [ ] IF not: Keep testing on current hardware
 
-### Month 2
-- [ ] Expand to multi-source sentiment (Discord, Telegram, Reddit)
-- [ ] Implement risk management (position sizing, stop losses)
-- [ ] Test in different market conditions
-- [ ] Optimize for $500+/month target
+## Research Questions
+- Twitter API free tier limits?
+- Best way to scrape tweets without API?
+- What meme coin keywords to track?
+- How to calculate sentiment from tweets?
+- Realistic win rate for crypto bots?
+- How much capital needed for $500/month profit?
 
-### Month 3
-- [ ] Final validation of profitability
-- [ ] Calculate total P&L over 3 months
-- [ ] Measure consistency (good months vs bad months)
-- [ ] DECISION: Buy RTX 5090 server or iterate further?
+---
 
-## PRIORITY 3: Stock Bot Improvements (Context Only)
-
-### Short Term
-- [ ] Pull financial models: ollama pull 0xroyce/plutus martain7r/finance-llama-8b
-- [ ] Test llm_analysis.py with new finance models
-- [ ] Enable web tools in llm_analysis.py (DuckDuckGo + scraper)
-- [ ] Add qwen2.5:32b as Master Reasoning Agent (when validated)
-
-### Long Term
-- [ ] Use stock data as CONTEXT for crypto trading decisions
-- [ ] Build backtesting system for stock signals (low priority)
-- [ ] Track if congressional trades correlate with crypto sentiment
-
-## PRIORITY 4: Hardware (ONLY After Validation)
-
-### If Crypto Bot is Profitable After 3 Months
-- [ ] Buy RTX 5090 GPU ($2,000-2,500)
-- [ ] Build dedicated server ($4,500-5,000 total)
-- [ ] Deploy all bots on local hardware
-- [ ] Set up 24/7 monitoring
-
-### If Not Profitable Yet
-- [ ] Continue testing on current hardware
-- [ ] Rent cloud GPU if needed for heavier models ($50-100/month)
-- [ ] DO NOT buy $5k server (save money, iterate more)
-
-## Remember
-
-**Real Edge:** Crypto/meme coins (inefficient markets, speed advantage)
-**Stock Data:** Context only (won't beat S&P 500, user already knows this)
-**Hardware:** Buy AFTER validation (don't waste $5k if bots don't work)
-**Goal:** $500/month profit from crypto bot
-
-**Even if bots don't make money, this project = valuable learning + portfolio piece**
+**Focus:** Crypto/meme coins (real edge)
+**Goal:** $500/month profit
+**Timeline:** 3 months validation → then decide on hardware

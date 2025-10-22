@@ -1,6 +1,6 @@
 # Autonomous Trading Bot
 
-**Goal:** 100% free, locally-run trading bot that beats S&P 500 by 5-10% annually using AI analysis.
+**Goal:** Make $500/month profit from crypto/meme coin trading using AI + Twitter scraping.
 
 ---
 
@@ -9,196 +9,179 @@
 ### Prerequisites
 - PostgreSQL on `localhost:54594` (user/pass: postgres/postgres)
 - Ollama running: `ollama serve`
-- Models installed: `ollama pull phi3:mini llama3:8b`
 
-### Run Everything
+### Run System
 ```bash
-# Terminal 1: Start data collection (runs all 8 scrapers)
+# Start data collection (all 8 scrapers)
 python orchestrator.py
 
-# Terminal 2: Run AI analysis (analyzes collected data)
+# Run AI analysis
 python llm_analysis.py
 
-# Stop everything: Press Ctrl+C in orchestrator terminal
+# Test everything
+python system_test.py
 ```
+
+---
+
+## What Works Now
+
+### Data Collection ✅
+8 scrapers running 24/7:
+- News (NewsAPI + RSS feeds)
+- Congressional trades (Senate + House)
+- SEC filings (EDGAR RSS)
+- Economic data (FRED)
+- Company fundamentals (FMP + yfinance)
+
+All data auto-deduplicates and saves to PostgreSQL + ChromaDB.
+
+### AI Analysis ✅
+CrewAI agents analyze news:
+- Triage Agent (Plutus 8B or llama3:8b) - Filters important news
+- Research Agent (Finance-Llama 8B or llama3:8b) - Summarizes events
+
+---
+
+## What to Build Next
+
+### Crypto Twitter Scraper (PRIORITY)
+Your real edge is crypto/meme coins, not stocks.
+
+**Why:** Inefficient markets + speed advantage over humans = profit potential
+
+**What you need:**
+1. Twitter API or Selenium scraper
+2. Track meme coin mentions ($SOL, $PEPE, pump.fun, etc.)
+3. Store in PostgreSQL
+4. Sentiment analysis with AI
+
+**Goal:** Catch pumps before manual traders (20-500% gains in minutes)
+
+### Paper Trading Framework
+Track all signals without risking money:
+- Log entry/exit prices
+- Calculate P&L, win rate, Sharpe ratio
+- Measure max drawdown
+
+**Goal:** Prove profitability before investing in hardware
 
 ---
 
 ## System Architecture
 
-### Data Collection (orchestrator.py)
-Manages 8 scrapers that collect data 24/7:
-- **News**: NewsAPI (100/day) + RSS feeds (unlimited, 9 sources)
-- **Congressional Trades**: Senate + House disclosure scrapers
-- **Economic**: FRED macroeconomic indicators
-- **SEC**: EDGAR filings (8-K, 10-K, 10-Q, Form 4)
-- **Company Data**: FMP + yfinance fundamentals
+### Orchestrator (orchestrator.py)
+Manages all scrapers via `config/scrapers.yaml`
 
-All scrapers auto-deduplicate and save to databases.
-
-### AI Analysis (llm_analysis.py)
-CrewAI agents analyze the collected data:
-1. **Triage Agent** (Plutus 8B or phi3:mini) - Classifies news as "Investigate" or "Ignore"
-2. **Research Agent** (Finance-Llama-8B or llama3:8b) - Summarizes important news
-3. **Master Agent** (planned) - Generates trading signals
+**Add new scraper:** Edit yaml file (6 lines), no code changes.
 
 ### Databases
-- **PostgreSQL** (port 54594): Congressional trades, SEC filings, economic data, company profiles
-- **ChromaDB**: News articles with metadata
+- **PostgreSQL (port 54594):** Congressional trades, SEC filings, economic data, fundamentals
+- **ChromaDB:** News articles with metadata
+
+### AI Models (Ollama)
+- **Current:** phi3:mini, llama3:8b
+- **Recommended:** 0xroyce/plutus, martain7r/finance-llama-8b (finance-trained)
+- **Advanced:** qwen2.5:32b (needs better hardware)
 
 ---
 
-## Adding New Data Sources
+## Strategy
 
-Edit `config/scrapers.yaml` and add:
+### What WON'T Work
+**Stock trading bot** - Market too efficient, can't compete with hedge funds
+
+**Role of stock data:** Context for AI decisions (macro trends, risk sentiment)
+
+### What MIGHT Work (30-40% chance)
+**Crypto/meme coin bot** - Inefficient markets, retail-dominated, speed matters
+
+**Edge:** Twitter scraping + AI sentiment + fast execution
+
+---
+
+## Adding Scrapers
+
+Edit `config/scrapers.yaml`:
 ```yaml
-  - name: My New Scraper
-    script: path/to/scraper.py
-    category: news|congressional|economic|sec|fundamentals
-    enabled: true
-    free_tier: "API limit info"
-    interval: "how often it runs"
+- name: My Scraper
+  script: path/to/scraper.py
+  category: news|congressional|economic|sec|fundamentals|crypto
+  enabled: true
+  free_tier: "API limit"
+  interval: "frequency"
 ```
 
-Restart orchestrator. That's it!
+Restart orchestrator. Done.
 
 ---
 
-## Project Structure
+## Database Config
+
+**PostgreSQL:**
+- Port: 54594 (not default 5432)
+- User/pass: postgres/postgres
+- Tables: congressional_trades, sec_filings, economic_indicators, company_profiles
+
+**ChromaDB:**
+- Path: `chroma_db_news/`
+- Collection: news_articles
+
+---
+
+## File Structure
 
 ```
 pjx/
-├── orchestrator.py          # Manages all data scrapers
-├── ai_analysis.py           # AI analysis with CrewAI
+├── orchestrator.py          # Manages all scrapers
+├── llm_analysis.py          # AI analysis
 ├── config/
-│   └── scrapers.yaml        # Scraper configuration
-├── outputs/
-│   └── triage_results.txt   # AI analysis output
-├── logs/                    # All scraper logs
-├── senate_scraper/          # Senate trade scraper
-├── house_scraper/           # House trade scraper
-├── news_scrapers/           # News scrapers (NewsAPI, RSS)
-├── data_api/                # Economic data (FRED)
-├── sec_data/                # SEC filings scraper
-└── fundamentals_data/       # Company data scrapers
+│   └── scrapers.yaml        # Scraper config
+├── logs/                    # All logs
+├── outputs/                 # AI outputs
+├── senate_scraper/
+├── house_scraper/
+├── news_scrapers/
+├── data_api/
+├── sec_data/
+├── fundamentals_data/
+└── crypto_scrapers/         # TO BE BUILT
+    ├── twitter_scraper.py
+    ├── sentiment_analyzer.py
+    └── paper_trading.py
 ```
 
 ---
 
-## Tech Stack
+## Validation Plan
 
-- **AI**: CrewAI + Ollama (phi3:mini, llama3:8b, deepseek-coder:33b planned)
-- **Databases**: PostgreSQL, ChromaDB
-- **Scraping**: Selenium, BeautifulSoup, feedparser
-- **APIs**: NewsAPI, FRED, FMP, yfinance (all free tiers)
+**Phase 1 (3 months):** Test on current hardware
+- Build crypto Twitter scraper
+- Paper trade all signals
+- Track metrics daily
+- Iterate on what works
 
----
-
-## Configuration
-
-### Database
-- PostgreSQL port: `54594` (not default 5432)
-- Credentials: postgres/postgres
-
-### API Keys
-Hardcoded in scraper files:
-- NewsAPI: `news_scrapers/newsapi_reader.py` line 13
-- FRED: `data_api/fred_data_reader.py` line 8
-- FMP: `fundamentals_data/fmp_fundamentals_reader.py` line 9
-
-### Scrapers
-Edit `config/scrapers.yaml` to enable/disable scrapers.
+**Phase 2 (After validation):** Buy hardware IF profitable
+- RTX 5090 server ($5k) only if making $500+/month
+- Deploy 24/7 autonomous system
 
 ---
 
-## Testing
+## Reference Docs
 
-### Quick System Check
-```bash
-python quick_test.py
-```
-Verifies all files exist and config is correct.
-
-### Full System Test
-```bash
-python system_test.py
-```
-Checks databases, connections, and data collection.
+Additional guides in `docs/` folder (read later if needed):
+- Hardware setup (RTX 4090/5090)
+- Cloud GPU testing
+- Model installation
 
 ---
 
-## Troubleshooting
+## Remember
 
-**Orchestrator shows "[WARNING] scraper stopped unexpectedly"**
-- For congressional/daily scrapers: This is normal! They run once and exit.
-- For news scrapers: Check logs in `logs/` folder for actual errors.
+**This project is valuable even if it doesn't make money:**
+- Skills learned = $80k-120k/year jobs
+- Portfolio project for resume
+- Deep understanding of AI + finance + systems
 
-**Scraper won't start**
-- Check script exists: `ls path/to/scraper.py`
-- Run directly to see error: `python path/to/scraper.py`
-- Check log file in `logs/` folder
-
-**No data being collected**
-- Verify PostgreSQL is running: `python system_test.py`
-- Check API keys are valid
-- Look for ERROR messages in logs
-
-**How to check database status**
-```bash
-python system_test.py
-# Shows row counts and latest dates for all tables
-```
-
----
-
-## Development Guidelines
-
-✅ **Always use free tier APIs** - research limits before adding
-✅ **Keep it simple** - easy to understand and maintain
-✅ **Auto-deduplicate** - prevent data bloat
-✅ **Build for autonomy** - no manual intervention needed
-
----
-
-## Roadmap
-
-**Phase 1: Data Collection** ✅ COMPLETE
-- All 8 scrapers operational
-
-**Phase 2: Expand News** ✅ COMPLETE
-- Added RSS aggregator (9 sources, unlimited)
-
-**Phase 3: Enhanced AI** (In Progress)
-- [ ] Enable web tools for Research Agent
-- [ ] Add Master Reasoning Agent (deepseek-coder:33b)
-- [ ] Build backtesting system
-
-**Phase 4: Paper Trading** (Planned)
-- [ ] Integrate Alpaca API
-- [ ] Implement risk management
-- [ ] Track performance metrics
-
----
-
-## Current Status
-
-**Databases (as of last check):**
-- 2,822 congressional trades
-- 340 news articles (growing every 15 min)
-- 68 SEC filings
-- 5 economic indicators
-- 23 company profiles
-
-**System:** Fully operational and collecting data 24/7.
-
----
-
-## Files You Care About
-
-- **README.md** ← You are here
-- **TODO.txt** ← Next tasks
-- **config/scrapers.yaml** ← Add/remove scrapers
-- **orchestrator.py** ← Start this to collect data
-- **ai_analysis.py** ← Run this to analyze data
-
-That's it! Keep it simple.
+**Focus on:** Crypto bot (where real edge is)
+**Avoid:** Expecting stock bot to beat S&P 500 (it won't)
