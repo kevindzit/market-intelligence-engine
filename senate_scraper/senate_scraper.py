@@ -31,7 +31,7 @@ TARGET_REPORT_TYPES = [
 
 def setup_logging():
     """Sets up the logging configuration."""
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filename='../logs/senate_scraper.log', filemode='w')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filename='logs/senate_scraper.log', filemode='w')
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')

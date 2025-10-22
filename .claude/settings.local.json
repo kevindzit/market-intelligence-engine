@@ -7,7 +7,17 @@
       "Bash(fi)",
       "Bash(python:*)",
       "Bash(where:*)",
-      "Bash(.venv/Scripts/python.exe:*)"
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(mkdir -p \"c:\\Users\\kevin\\OneDrive\\pjx\\config\")",
+      "Bash(timeout 10 python:*)",
+      "Bash(timeout 15 python:*)",
+      "Bash(if [ -f orchestrator_test.log ])",
+      "Bash(then cat orchestrator_test.log)",
+      "Bash(else echo \"Log not created yet\")",
+      "Bash(cat:*)",
+      "Bash(timeout 5 python:*)",
+      "Bash(timeout 5 .venv/Scripts/python.exe:*)",
+      "Bash(awk:*)"
     ],
     "deny": [],
     "ask": []

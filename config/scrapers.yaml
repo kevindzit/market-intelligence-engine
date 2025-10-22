@@ -1,0 +1,83 @@
+# Trading Bot Scraper Configuration
+# To add a new scraper: Just add a new entry below!
+
+scrapers:
+  # ==================== NEWS SCRAPERS ====================
+  - name: NewsAPI Reader
+    script: news_scrapers/newsapi_reader.py
+    category: news
+    description: Fetches US business headlines from NewsAPI
+    enabled: true
+    free_tier: "100 calls/day"
+    interval: "15 minutes"
+
+  - name: RSS Aggregator
+    script: news_scrapers/rss_aggregator.py
+    category: news
+    description: Aggregates news from 9 RSS feeds (MarketWatch, CNBC, etc.)
+    enabled: true
+    free_tier: "Unlimited"
+    interval: "15 minutes"
+
+  # ==================== CONGRESSIONAL TRADES ====================
+  - name: Senate Scraper
+    script: senate_scraper/senate_scraper.py
+    category: congressional
+    description: Scrapes Senate trade disclosures
+    enabled: true  # TESTING: Enabled for full system test
+    free_tier: "Unlimited"
+    interval: "daily"
+
+  - name: House Scraper
+    script: house_scraper/house_scraper.py
+    category: congressional
+    description: Scrapes House trade disclosures
+    enabled: true  # TESTING: Enabled for full system test
+    free_tier: "Unlimited"
+    interval: "daily"
+
+  # ==================== ECONOMIC DATA ====================
+  - name: FRED Economic Data
+    script: data_api/fred_data_reader.py
+    category: economic
+    description: Fetches macroeconomic indicators from FRED
+    enabled: true  # TESTING: Enabled for full system test
+    free_tier: "Unlimited"
+    interval: "daily"
+
+  # ==================== SEC FILINGS ====================
+  - name: SEC EDGAR Reader
+    script: sec_data/edgar_rss_reader.py
+    category: sec
+    description: Monitors SEC EDGAR RSS for new filings
+    enabled: true  # TESTING: Enabled for full system test
+    free_tier: "Unlimited"
+    interval: "10 minutes"
+
+  # ==================== COMPANY FUNDAMENTALS ====================
+  - name: FMP Fundamentals
+    script: fundamentals_data/fmp_fundamentals_reader.py
+    category: fundamentals
+    description: Fetches company profiles from Financial Modeling Prep
+    enabled: true  # TESTING: Enabled for full system test
+    free_tier: "250 calls/day"
+    interval: "daily"
+
+  - name: yfinance Fundamentals
+    script: fundamentals_data/yfinance_fundamentals_reader.py
+    category: fundamentals
+    description: Fetches company data from Yahoo Finance
+    enabled: true  # TESTING: Enabled for full system test
+    free_tier: "Unlimited"
+    interval: "daily"
+
+# ==================== FUTURE SCRAPERS ====================
+# To add a new scraper, copy this template:
+#
+#  - name: My New Scraper
+#    script: path/to/my_scraper.py
+#    category: news|congressional|economic|sec|fundamentals|other
+#    description: What this scraper does
+#    enabled: true
+#    free_tier: "API limit info"
+#    interval: "how often it runs"

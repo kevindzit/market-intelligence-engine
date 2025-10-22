@@ -29,7 +29,7 @@ DATA_DIR = "house_data"
 PROCESSED_DOCS_FILE = os.path.join(DATA_DIR, "processed_docs.txt")
 
 def setup_logging():
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filename='../logs/house_scraper.log', filemode='w')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filename='logs/house_scraper.log', filemode='w')
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')

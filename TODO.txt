@@ -1,17 +1,17 @@
-# Immediate Next Steps
+# Current Tasks
 
-## Phase 2: Expand News Sources
-- [ ] Add Alpha Vantage news scraper (500 calls/day + sentiment)
-- [ ] Build RSS feed aggregator (Benzinga, MarketWatch, Nasdaq, CNBC)
-- [ ] Add Finnhub news scraper
-- [ ] Create deduplication system for news across all sources
+## Immediate
+- [ ] Let orchestrator run for a few hours to collect data
+- [ ] Test ai_analysis.py with collected data
+- [ ] Monitor logs for any errors
 
-## Bug Fixes
-- [ ] Senate scraper: Handle random PDF formats (currently skips them)
-- [ ] Expand beyond 23 monitored tickers in fundamentals scrapers
+## Short Term
+- [ ] Add more RSS news sources if needed
+- [ ] Enable web tools in ai_analysis.py (DuckDuckGo + scraper)
+- [ ] Fix House scraper PDF parsing issues (some transactions fail)
 
-## Future Ideas
-- [ ] Enable web tools for Research Agent in app.py (DuckDuckGo + scraper already coded)
-- [ ] Add Master Reasoning Agent using deepseek-coder:33b
-- [ ] Multi-agent debate system (agents discuss with each other before making decisions)
-- [ ] Alpaca API integration for paper trading
+## Long Term
+- [ ] Add Master Reasoning Agent (deepseek-coder:33b)
+- [ ] Build backtesting system
+- [ ] Integrate Alpaca paper trading API
+- [ ] Set up Windows Task Scheduler for automation
