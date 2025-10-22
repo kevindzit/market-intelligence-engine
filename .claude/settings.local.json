@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(if [ -f \"scraper.log\" ])",
+      "Bash(then mv scraper.log ../logs/senate_scraper_old.log)",
+      "Bash(else echo \"No scraper.log in senate_scraper folder\")",
+      "Bash(fi)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

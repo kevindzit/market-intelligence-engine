@@ -1,133 +1,214 @@
 import os
 import chromadb
-import re
-from crewai import Agent, Task, Crew, Process
-from langchain_ollama import OllamaLLM
+from crewai import Agent, Task, Crew, Process, LLM
+from crewai_tools import ScrapeWebsiteTool
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field
+from typing import Type
+from duckduckgo_search import DDGS
 
 # --- Configuration ---
 CHROMA_PATH = "chroma_db_news"
 COLLECTION_NAME = "news_articles"
 
-# --- Initialize ChromaDB Client ---
+# Don't set OPENAI_API_KEY at all - let it be missing
+
+# --- Initialize ChromaDB ---
 try:
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     collection = client.get_collection(name=COLLECTION_NAME)
-    print(f"Successfully connected to ChromaDB. Articles in collection: {collection.count()}")
+    print(f"ChromaDB: {collection.count()} articles")
 except Exception as e:
-    print(f"Error connecting to ChromaDB: {e}")
+    print(f"ChromaDB error: {e}")
     exit()
 
-# --- Initialize the Local AI Model ---
-ollama_phi3 = OllamaLLM(model="ollama/phi3:mini", base_url="http://localhost:11434")
-print("Ollama model (phi3:mini) initialized.")
+# --- Initialize Models ---
+try:
+    # Use CrewAI's LLM wrapper instead of langchain directly
+    print("Testing Ollama connection...")
+    import requests
+    response = requests.get("http://localhost:11434/api/tags")
+    if response.status_code != 200:
+        print("Ollama server: NOT responding. Run 'ollama serve'")
+        exit()
+    
+    print("Ollama server: Connected")
+    models = response.json().get('models', [])
+    print(f"Available models: {[m['name'] for m in models]}")
+    
+    # Use simpler, faster models
+    ollama_phi3 = LLM(
+        model="ollama/phi3:mini",
+        base_url="http://localhost:11434"
+    )
+    ollama_llama3 = LLM(
+        model="ollama/llama3:8b",
+        base_url="http://localhost:11434"
+    )
+    
+    print("Models: Ready")
+except Exception as e:
+    print(f"Model error: {e}")
+    import traceback
+    traceback.print_exc()
+    exit()
 
-# --- Define the Agents ---
-news_triage_agent = Agent(
+# --- Custom DuckDuckGo Tool ---
+class DDGSearchInput(BaseModel):
+    query: str = Field(..., description="Search query")
+
+class DuckDuckGoSearchTool(BaseTool):
+    name: str = "DuckDuckGo Search"
+    description: str = "Search the internet. Input: search query string."
+    args_schema: Type[BaseModel] = DDGSearchInput
+    
+    def _run(self, query: str) -> str:
+        try:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=5))
+            if not results:
+                return "No results found."
+            return "\n".join([f"{i+1}. {r.get('title', '')}\n   {r.get('body', '')}\n   {r.get('href', '')}\n" 
+                            for i, r in enumerate(results)])
+        except Exception as e:
+            return f"Search error: {e}"
+
+# --- Tools ---
+web_scraper = ScrapeWebsiteTool()
+search_tool = DuckDuckGoSearchTool()
+
+# --- Agents ---
+triage_agent = Agent(
     role='Financial News Triage Specialist',
-    goal='Analyze a list of recent financial news headlines and classify each one as either "Investigate" or "Ignore".',
-    backstory=(
-        "You are an expert at quickly identifying market-moving news. "
-        "Your strength is in rapidly scanning headlines to filter out irrelevant information, "
-        "allowing your team to focus only on what truly matters. You are fast, efficient, and have a sharp eye for impactful events."
-    ),
-    verbose=True,
+    goal='Classify news as "Investigate" or "Ignore" based on market impact.',
+    backstory='Expert at identifying market-moving news quickly and accurately.',
+    verbose=False,
     allow_delegation=False,
     llm=ollama_phi3
 )
-print("News Triage Agent created.")
 
-# --- Define the Tasks ---
-def get_latest_news_from_db(num_articles=25):
-    """Fetches the most recent articles from the ChromaDB collection."""
+research_agent = Agent(
+    role='Financial News Analyst',
+    goal='Write brief summaries of investigated news items.',
+    backstory='You write clear, concise summaries based on headlines and snippets provided.',
+    verbose=False,
+    allow_delegation=False,
+    llm=ollama_llama3,
+    tools=[]  # No tools - just analyze the data provided
+)
+
+# --- Fetch News ---
+def get_latest_news(num=25):
     try:
-        results = collection.get(
-            include=['metadatas', 'documents'],
-            limit=num_articles
-        )
-        return results
+        results = collection.get(include=['metadatas', 'documents'], limit=num)
+        if not results or not results.get('metadatas'):
+            return {'ids': [], 'metadatas': [], 'documents': []}
+        
+        items = []
+        ids = results.get('ids', [])
+        metas = results.get('metadatas', [])
+        docs = results.get('documents', [])
+        
+        for i in range(min(len(ids), len(metas))):
+            items.append((ids[i], metas[i], docs[i] if i < len(docs) else None))
+        
+        items.sort(key=lambda x: x[1].get('scraped_at', ''), reverse=True)
+        return {'ids': [x[0] for x in items], 
+                'metadatas': [x[1] for x in items], 
+                'documents': [x[2] for x in items]}
     except Exception as e:
-        print(f"Error fetching news from ChromaDB: {e}")
-        return None
+        print(f"DB fetch error: {e}")
+        return {'ids': [], 'metadatas': [], 'documents': []}
 
-latest_news = get_latest_news_from_db()
+latest_news = get_latest_news()
 
-def format_news_for_llm(news_data):
-    """Formats the news data into a string for the AI to read."""
+def format_news(news_data):
     if not news_data or not news_data.get('metadatas'):
-        return "No new articles found."
+        return "No articles found."
     
-    formatted_news = ""
-    for i, metadata in enumerate(news_data['metadatas']):
-        headline = metadata.get('headline', 'No Headline')
-        snippet = news_data['documents'][i] if news_data.get('documents') else 'No Snippet'
-        formatted_news += f"Item {i+1}:\nHeadline: {headline}\nSnippet: {snippet}\n\n"
-    return formatted_news
+    formatted = ""
+    for i, meta in enumerate(news_data['metadatas']):
+        headline = meta.get('headline', 'No Headline')
+        snippet = news_data['documents'][i] if i < len(news_data.get('documents', [])) else 'No Snippet'
+        url = meta.get('url', 'No URL')
+        formatted += f"Item {i+1}:\nURL: {url}\nHeadline: {headline}\nSnippet: {snippet}\n\n"
+    return formatted
 
-# --- IMPROVED PROMPT AND EXPECTED OUTPUT ---
+news_content = format_news(latest_news) if latest_news else "Error fetching news."
+
+# --- Tasks ---
 triage_task = Task(
     description=(
-        "Analyze each of the following news items and classify them. Your answer for each item MUST be either 'Investigate' or 'Ignore'. "
-        "An item is 'Investigate' if it is likely market-moving (major earnings, M&A, Fed news, economic data, geopolitical events, CEO changes). "
-        "An item is 'Ignore' if it is general commentary, opinion, or clearly non-financial.\n\n"
-        "--- LATEST NEWS ---\n"
-        f"{format_news_for_llm(latest_news)}"
-    ),
-    expected_output=(
-        "A numbered list where each line contains ONLY the word 'Investigate' or 'Ignore'. Do not add any extra commentary or reasoning. "
-        "For example:\n"
+        "Analyze each news item and output ONLY 'Investigate' or 'Ignore' for each.\n\n"
+        "RULES:\n"
+        "- 'Investigate': Major earnings, M&A, Fed news, CEO changes, economic data, geopolitics\n"
+        "- 'Ignore': Commentary, opinions, minor news, advice\n\n"
+        "OUTPUT FORMAT - FOLLOW EXACTLY:\n"
         "1. Investigate\n"
         "2. Ignore\n"
-        "3. Investigate"
+        "3. Investigate\n"
+        "(and so on for all items)\n\n"
+        "NEWS ITEMS:\n"
+        f"{news_content}"
     ),
-    agent=news_triage_agent
+    expected_output="A numbered list with ONLY the word 'Investigate' or 'Ignore' on each line. No explanations.",
+    agent=triage_agent,
+    output_file="outputs/triage_results.txt"
 )
-print("News Triage Task created.")
 
-# --- Create and Run the Crew ---
-news_crew = Crew(
-    agents=[news_triage_agent],
-    tasks=[triage_task],
+research_task = Task(
+    description=(
+        "Write brief summaries for the first 5 items marked 'Investigate'.\n\n"
+        "News items:\n"
+        f"{news_content}\n\n"
+        "For each investigated item, write 2-3 sentences explaining:\n"
+        "- What happened\n"
+        "- Why it matters for markets\n\n"
+        "Format:\n"
+        "Item X: [Headline]\n"
+        "[Your 2-3 sentence summary]\n\n"
+    ),
+    expected_output="Brief summaries for first 5 investigated items based on headlines and snippets.",
+    agent=research_agent,
+    context=[triage_task]
+)
+
+# --- Run Crew ---
+crew = Crew(
+    agents=[triage_agent, research_agent],
+    tasks=[triage_task, research_task],
     process=Process.sequential,
-    verbose=True 
+    verbose=False,
+    memory=False  # CRITICAL: Disable memory to avoid OpenAI embedding errors
 )
 
-print("\n--- Kicking off the News Triage Crew ---")
-result = news_crew.kickoff()
-
-print("\n--- Triage Crew Finished ---")
-print("Final Raw Result from Triage Agent:")
-print(result.raw)
-
-# --- IMPROVED PROCESSING OF THE TRIAGE RESULT ---
-if result and result.raw:
-    # Use regex to find all occurrences of "Investigate" or "Ignore"
-    classifications = re.findall(r'(Investigate|Ignore)', result.raw)
+print("\nRunning analysis...")
+try:
+    result = crew.kickoff()
     
-    print("\n--- Extracted Classifications ---")
-    investigate_list = []
+    # Show triage results for debugging
+    print("\n=== TRIAGE RESULTS ===")
+    try:
+        with open("outputs/triage_results.txt", 'r') as f:
+            triage_content = f.read()
+            print(triage_content)  # Show full content
+
+            # Count investigations
+            investigate_count = triage_content.lower().count('investigate')
+            ignore_count = triage_content.lower().count('ignore')
+            print(f"\nStats: {investigate_count} Investigate, {ignore_count} Ignore")
+    except Exception as e:
+        print(f"Could not read outputs/triage_results.txt: {e}")
     
-    if len(classifications) == 0:
-        print("Agent did not return any valid classifications.")
+    print("\n=== RESEARCH RESULTS ===")
+    if result:
+        print(result)
     else:
-        for i, classification in enumerate(classifications):
-            # Ensure we don't go out of bounds of the news list
-            if latest_news and len(latest_news['ids']) > i:
-                if 'Investigate' in classification:
-                    news_item = {
-                        'headline': latest_news['metadatas'][i].get('headline'),
-                        'url': latest_news['ids'][i]
-                    }
-                    investigate_list.append(news_item)
-                    print(f"Item {i+1}: {classification} -> Will be researched.")
-                else:
-                    print(f"Item {i+1}: {classification} -> Ignoring.")
-            else:
-                break # Stop if classifications exceed number of news items
+        print("No results produced.")
+        
+except Exception as e:
+    print(f"\nError: {e}")
+    import traceback
+    traceback.print_exc()
 
-    print("\n--- Headlines to be Researched by the Next Agent ---")
-    if investigate_list:
-        for item in investigate_list:
-            print(f"- {item['headline']}")
-    else:
-        print("No significant news to investigate further.")
-
+print("\n=== DONE ===")

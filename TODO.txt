@@ -1,7 +1,17 @@
-Need to fix SS so that it collects data on the random pdfs that come through and does not ignore
+# Immediate Next Steps
 
-setup a jailbroken bot that can answer these questions:
-how to bypass selenium style scraping on websites like protected news outlets and twitter or x. etc...
+## Phase 2: Expand News Sources
+- [ ] Add Alpha Vantage news scraper (500 calls/day + sentiment)
+- [ ] Build RSS feed aggregator (Benzinga, MarketWatch, Nasdaq, CNBC)
+- [ ] Add Finnhub news scraper
+- [ ] Create deduplication system for news across all sources
 
+## Bug Fixes
+- [ ] Senate scraper: Handle random PDF formats (currently skips them)
+- [ ] Expand beyond 23 monitored tickers in fundamentals scrapers
 
-fix FMP and look into looks at all new yahoo finance news and not just the 23 stocks that gemini chose
+## Future Ideas
+- [ ] Enable web tools for Research Agent in app.py (DuckDuckGo + scraper already coded)
+- [ ] Add Master Reasoning Agent using deepseek-coder:33b
+- [ ] Multi-agent debate system (agents discuss with each other before making decisions)
+- [ ] Alpaca API integration for paper trading
