@@ -17,3 +17,9 @@
 **Focus:** Crypto/meme coins (real edge)
 **Goal:** $500/month profit
 **Timeline:** 3 months validation → then decide on hardware
+
+
+notes for me
+
+lets fix up everhtying we have nowand see how it works and what databse everythingh is connecting to and make sure veething is wroking well. and then i htink lets just get twitter out the way.
+

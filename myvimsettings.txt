@@ -1,0 +1,51 @@
+{
+    "explorer.confirmDragAndDrop": false,
+    "github.copilot.nextEditSuggestions.enabled": false,
+    "editor.minimap.enabled": false,
+    "git.openRepositoryInParentFolders": "always",
+    "vim.useCtrlKeys": false,
+"vim.handleKeys": {
+    "<C-c>": false,
+    "<C-v>": false,
+    "<C-a>": false
+},
+"python.analysis.typeCheckingMode": "basic",
+"pgsql.serverGroups": [
+    {
+        "name": "Servers",
+        "id": "49C0730B-9103-456A-A372-CEEF2A6641AC",
+        "isDefault": true
+    }
+],
+"pgsql.connections": [
+    {
+        "id": "CFC9570E-AA43-4435-A412-32E1EEDB69D1",
+        "groupId": "49C0730B-9103-456A-A372-CEEF2A6641AC",
+        "authenticationType": "SqlLogin",
+        "connectTimeout": 15,
+        "applicationName": "vscode-pgsql",
+        "user": "postgres",
+        "database": "postgres",
+        "imageName": "postgres",
+        "imageVersion": "latest",
+        "profileName": "Trading Bot DB",
+        "containerName": "trading-bot-db",
+        "password": "",
+        "savePassword": true,
+        "port": 54594,
+        "imageRegistry": "",
+        "server": "localhost",
+        "expiresOn": 0,
+        "sshPassword": ""
+    }
+],
+"explorer.confirmDelete": false,
+"pgsql.openQueryResultsInTabByDefaultDoNotShowPrompt": true,
+"markdown-preview-enhanced.previewTheme": "one-dark.css",
+"markdown-preview-enhanced.enablePreviewZenMode": true,
+"claude-code.selectedModel": "default"
+
+}
+
+
+OPEN Preferences: Open Settings (JSON)  for user

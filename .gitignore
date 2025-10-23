@@ -46,5 +46,10 @@ htmlcov/
 *.db
 *.sqlite3
 
+archived_complex_code/
+moon-dev-reference/
 
-/moon-dev-reference/
+
+my api llm keys.txt
+
+.claudeignore
