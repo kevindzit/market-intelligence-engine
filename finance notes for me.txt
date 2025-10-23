@@ -1,0 +1,9 @@
+standard income statement example:
+
+Revenue - Money coming in from selling products/services
+COGS (Cost of Goods Sold) - Direct costs to make/deliver the product
+Gross Profit - Revenue minus COGS (profit before overhead)
+R&D (Research & Development) - Money spent creating new products
+SG&A (Selling, General & Administrative) - Salaries, marketing, rent, etc.
+OpEx (Operating Expenses) - Total of R&D + SG&A
+OpInc (Operating Income) - Gross Profit minus OpEx (actual profit/loss)

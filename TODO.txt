@@ -1,23 +1,4 @@
-# What to Do Next
 
-## This Week
-- [ ] Research Twitter API (free tier limits) or Selenium scraping
-- [ ] Build Twitter scraper for meme coin mentions
-- [ ] Research Pump.fun API for new token launches
-- [ ] Set up crypto_mentions table in PostgreSQL
-- [ ] Add Twitter scraper to config/scrapers.yaml
-
-## Next Steps
-- [ ] Build sentiment analysis (use Finance-Llama 8B)
-- [ ] Create paper trading framework (log signals, track P&L)
-- [ ] Track metrics: win rate, Sharpe ratio, max drawdown
-- [ ] Research Solana DEX APIs (Raydium, Orca, Jupiter)
-- [ ] Expand to Discord/Telegram scraping
-
-## Stock Bot (Context Only - Low Priority)
-- [ ] Test llm_analysis.py with finance models (Plutus, Finance-Llama)
-- [ ] Enable web tools (DuckDuckGo + scraper)
-- [ ] Use stock data as context for crypto decisions
 
 ## After 3 Months Validation
 - [ ] IF profitable: Buy RTX 5090 server ($5k)
@@ -31,7 +12,7 @@
 - Realistic win rate for crypto bots?
 - How much capital needed for $500/month profit?
 
----
+
 
 **Focus:** Crypto/meme coins (real edge)
 **Goal:** $500/month profit
