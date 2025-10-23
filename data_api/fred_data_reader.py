@@ -3,9 +3,14 @@ import schedule
 import time
 import psycopg2
 from fredapi import Fred
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 # --- Configuration ---
-FRED_API_KEY = "0a463bcea9719e4351642c5dd9ce4cde"
+FRED_API_KEY = os.getenv('FRED_API_KEY')
 
 # PostgreSQL Connection Details (same as your other scripts)
 DB_NAME = "postgres"

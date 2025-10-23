@@ -23,7 +23,9 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git rm:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Read(//c/tmp/**)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": []

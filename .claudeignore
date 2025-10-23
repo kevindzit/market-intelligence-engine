@@ -1,0 +1,11 @@
+moon-dev-reference/
+logs/
+outputs/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.log
+*.tmp
+.cache/

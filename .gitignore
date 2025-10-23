@@ -45,3 +45,6 @@ htmlcov/
 # MySQL or SQLite databases
 *.db
 *.sqlite3
+
+
+/moon-dev-reference/

@@ -5,13 +5,14 @@ import time
 import os
 import chromadb
 from datetime import datetime, timezone
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # --- Configuration ---
-# IMPORTANT: Replace "YOUR_NEWSAPI_KEY_HERE" with your actual NewsAPI key.
-# For better security in a real application, use environment variables
-# or a secrets management tool instead of hardcoding the key.
-NEWSAPI_KEY = "9a86365177184e979c4c5f2f36eb207f"
-# Check key again here: 9a86365177184e979c4c5f2f36eb207f
+# Now using environment variable for better security
+NEWSAPI_KEY = os.getenv('NEWS_API_KEY')
 NEWSAPI_ENDPOINT = f"https://newsapi.org/v2/top-headlines?country=us&category=business&apiKey={NEWSAPI_KEY}"
 
 # ChromaDB Setup (Assumes default local setup)

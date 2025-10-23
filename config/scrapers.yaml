@@ -71,12 +71,21 @@ scrapers:
     free_tier: "Unlimited"
     interval: "daily"
 
+  # ==================== CRYPTO SCRAPERS ====================
+  - name: Twitter Sentiment Analyzer
+    script: crypto_scrapers/twitter_sentiment.py
+    category: crypto
+    description: Analyzes Twitter sentiment for crypto tokens using FinBERT
+    enabled: true
+    free_tier: "Unlimited (local model)"
+    interval: "15 minutes"
+
 # ==================== FUTURE SCRAPERS ====================
 # To add a new scraper, copy this template:
 #
 #  - name: My New Scraper
 #    script: path/to/my_scraper.py
-#    category: news|congressional|economic|sec|fundamentals|other
+#    category: news|congressional|economic|sec|fundamentals|crypto|other
 #    description: What this scraper does
 #    enabled: true
 #    free_tier: "API limit info"

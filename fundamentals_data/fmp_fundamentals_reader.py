@@ -4,9 +4,14 @@ import schedule
 import time
 import psycopg2
 from datetime import datetime, timezone
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 # --- Configuration ---
-FMP_API_KEY = "Scqx3sMK3VClLLA3iaxar0tYwZOeX30y"
+FMP_API_KEY = os.getenv('FMP_API_KEY')
 
 # PostgreSQL Connection Details
 DB_NAME = "postgres"
