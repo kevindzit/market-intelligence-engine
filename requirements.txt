@@ -24,5 +24,16 @@ duckduckgo-search>=4.0.0
 fredapi>=0.5.1
 yfinance>=0.2.32
 
+# Twitter scraping
+twikit>=2.3.3
+
+# Sentiment analysis
+transformers>=4.57.0
+torch>=2.7.0
+
 # Utilities
 python-dotenv>=1.0.0
+httpx>=0.28.0
+
+
+ones that i added that might be dupes but might need to be checked: pip install torch   pip install transformers  pip3 install emoji==0.6.0

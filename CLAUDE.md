@@ -4,16 +4,13 @@ Instructions for Claude Code on the PJX Crypto Trading System.
 
 ---
 
-## Current Project Focus (Updated Oct 23, 2025)
+## Current Project Focus
 
-**PRIMARY GOAL: Build a robust data collection and AI decision system**
+**PRIMARY GOAL: Build a robust data collection system**
 
-We are NOT focused on trading execution yet. We are building:
-1. **Data scraping infrastructure** - Collect all relevant data
-2. **Database architecture** - Store data optimally for AI analysis
-3. **AI decision chain** - Use Claude API to analyze data and make decisions
+We are building a **data scraping infrastructure** to collect market data, then use **AI (Claude API) to analyze and make trading decisions**.
 
-Trading on exchanges (HyperLiquid, Extended, etc.) comes MUCH LATER.
+Trading execution comes MUCH LATER.
 
 ---
 
@@ -36,7 +33,7 @@ Trading on exchanges (HyperLiquid, Extended, etc.) comes MUCH LATER.
 ## Development Rules
 
 ### File Management
-- **Keep files under 800 lines** - if longer, split into new files and update README
+- **Keep files under 800 lines** - if longer, split into new files
 - **DO NOT move files without asking** - you can create new files but no moving
 - **NEVER create new virtual environments** - use existing setup
 - **Update requirements.txt** after adding any new package
@@ -49,221 +46,197 @@ Trading on exchanges (HyperLiquid, Extended, etc.) comes MUCH LATER.
 
 ---
 
-## Current System Status
+## Current System (8 Active Scrapers)
 
-### ✅ What's Working (Your Existing System)
-**Data Collection (8 scrapers):**
-- News scrapers (NewsAPI + RSS) → ChromaDB (340+ articles)
-- Congressional trades (Senate + House) → PostgreSQL (2,822 trades)
-- SEC filings → PostgreSQL (68 filings)
-- Economic data (FRED) → PostgreSQL (5 indicators)
-- Company fundamentals (FMP + yfinance) → PostgreSQL (23 profiles)
+### Data Collection
+1. **News** - NewsAPI + RSS → ChromaDB
+2. **Congressional Trades** - Senate + House → PostgreSQL
+3. **SEC Filings** - EDGAR RSS → PostgreSQL
+4. **Economic Data** - FRED API → PostgreSQL
+5. **Company Fundamentals** - FMP + yfinance → PostgreSQL
 
-**Infrastructure:**
-- PostgreSQL database (Docker, port 54594)
-- ChromaDB for news vectors
-- Orchestrator manages all scrapers
-- CrewAI for news triage/research
-- All API keys in single `.env` file
-
-### ❌ What's NOT Built Yet
-- Crypto price data scraper (simple CoinGecko API)
-- AI trading decision system (Claude API integration)
-- Decision logging/tracking
-- Paper trading validation (LATER)
-- Exchange connections (MUCH LATER)
+### Infrastructure
+- **PostgreSQL** (Docker, port 54594) - Structured data
+- **ChromaDB** (chroma_db_news/) - News vectors
+- **Orchestrator** - Manages all scrapers via config/scrapers.yaml
+- **.env file** - All API keys in one place
 
 ---
 
-## System Architecture
+## Next to Build
 
-### Phase 1: DATA LAYER (Current Focus)
-```
-Data Sources → Scrapers → PostgreSQL/ChromaDB
-```
+### 1. Twitter/X Sentiment Scraper
+- Use **twikit** library (FREE, no $100/month API)
+- Search by keywords: BTC, ETH, SOL, PEPE, DOGE
+- Analyze sentiment with HuggingFace model
+- Store in PostgreSQL
 
-**Existing Sources:**
-- News (business headlines, RSS feeds)
-- Congressional trades (Senate, House)
-- SEC filings (8-K, 10-K, insider trades)
-- Economic data (GDP, unemployment, rates)
-- Fundamentals (market cap, P/E, sector)
+### 2. Crypto Price Data
+- CoinGecko API (free tier: 10k calls/month)
+- Track BTC, ETH, SOL, PEPE, DOGE prices
+- Store in PostgreSQL
 
-**To Add:**
-- Crypto prices (BTC, ETH, SOL, PEPE, DOGE)
-- Crypto volume/liquidity data
-- (Maybe later) Social sentiment
+### 3. AI Decision Layer (Later)
+- Pull data from PostgreSQL
+- Send to Claude API for analysis
+- Get BUY/SELL/HOLD decision + reasoning
+- Log decisions to database
 
-### Phase 2: AI DECISION LAYER (Next Step)
-```
-PostgreSQL Data → Claude API → Trading Decisions → Log to DB
-```
-
-**How it works:**
-1. Pull all relevant data from database
-2. Format into prompt for Claude
-3. Claude analyzes and returns: BUY/SELL/HOLD + confidence + reasoning
-4. Log decision to `trading_decisions` table
-5. Review decisions manually to validate AI is working
-
-### Phase 3: VALIDATION LAYER (Later)
-```
-Track AI decisions → Compare to actual prices → Calculate if profitable
-```
-
-### Phase 4: EXECUTION LAYER (Much Later)
-```
-Connect to exchange → Execute validated strategies → Monitor performance
+---
 
 ## Tech Stack
 
 ### Databases
-- **PostgreSQL** (port 54594) - Structured data
-- **ChromaDB** (chroma_db_news/) - News vectors
+- **PostgreSQL** (port 54594) - All structured data
+- **ChromaDB** - News article vectors
 
-### APIs (Pay-as-you-go)
-- **Claude Sonnet 4** - Trading decisions (~$10-15/month)
-- **Gemini Flash** - Data processing (~$1-2/month)
-- **CoinGecko** - Crypto prices (free tier: 10k calls/month)
-- **NewsAPI** - Business news (free tier: 100 calls/day)
-- **FRED** - Economic data (free, unlimited)
-- **FMP** - Company fundamentals (free tier: 250 calls/day)
+### Free/Cheap APIs
+- **NewsAPI** - 100 calls/day (free)
+- **FRED** - Unlimited (free)
+- **FMP** - 250 calls/day (free)
+- **CoinGecko** - 10k calls/month (free)
+- **TwiKit** - Unlimited (free, no API key)
+- **Claude Sonnet 4** - $10-15/month (when we build AI layer)
 
-### Python Libraries
+### Key Libraries
 - `psycopg2-binary` - PostgreSQL
 - `chromadb` - Vector database
-- `anthropic` - Claude API
+- `twikit` - Twitter scraping (free!)
+- `transformers` - Sentiment analysis
+- `anthropic` - Claude API (later)
 - `requests` - HTTP calls
-- `selenium` - Web scraping
-- `crewai` - Multi-agent orchestration
 - `python-dotenv` - Environment variables
 
 ---
 
-## Adding New Components
+## How to Add a Scraper
 
-### 1. Add a New Scraper
-Edit `config/scrapers.yaml`:
+### 1. Create the scraper file
+```bash
+# Example: crypto_scrapers/twitter_sentiment.py
+```
+
+### 2. Add to config/scrapers.yaml
 ```yaml
-- name: Crypto Prices
-  script: crypto_prices.py
+- name: Twitter Sentiment
+  script: crypto_scrapers/twitter_sentiment.py
   category: crypto
-  description: Fetches BTC/ETH/SOL prices from CoinGecko
+  description: Analyzes Twitter sentiment for crypto
   enabled: true
-  free_tier: "10,000 calls/month"
+  free_tier: "Free (twikit)"
   interval: "15 minutes"
 ```
 
-### 2. Add a New API Key
-Add to `.env`:
-```
-COINGECKO_API_KEY=your_key_here
+### 3. Add API keys to .env (if needed)
+```bash
+TWITTER_USERNAME=your_username
+TWITTER_EMAIL=your_email
+TWITTER_PASSWORD=your_password
 ```
 
-### 3. Add a New Database Table
-Create SQL file in `data/` folder, then run:
+### 4. Update requirements.txt
+```bash
+pip freeze > requirements.txt
+```
+
+---
+
+## Database Tables
+
+### Current Tables
+1. `congressional_trades` - Senate + House trade data
+2. `economic_indicators` - FRED economic data
+3. `sec_filings` - SEC filing data
+4. `company_profiles` - Company fundamentals
+
+### To Add
+- `crypto_prices` - BTC/ETH/SOL price data
+- `twitter_sentiment` - Crypto sentiment from Twitter
+
+Create new tables in `data/` folder, then run:
 ```bash
 psql -h localhost -p 54594 -U postgres -d postgres -f data/new_table.sql
 ```
 
 ---
 
-## Current Workflow
+## Running the System
 
-### Daily Data Collection
+### Start all scrapers
 ```bash
-# Start orchestrator (runs all scrapers)
 python orchestrator.py
-
-# Scrapers run every 15 minutes (news, crypto prices)
-# Or daily (congressional, economic)
-# Data flows into PostgreSQL/ChromaDB automatically
 ```
 
-### AI Analysis (When Ready)
+### View logs
 ```bash
-# Run Claude decision maker
-python trading_decision.py
-
-# Reviews all data, makes decision, logs to database
-# You manually review decisions to validate
+# Check outputs/ and logs/ folders
 ```
-
----
-
-## What We're Building Toward (Long-term Vision)
-
-**Eventually**, this system will:
-1. Collect data from multiple sources (✅ mostly done)
-2. AI analyzes data and suggests trades (← building this next)
-3. Paper trade to validate strategies (← later)
-4. Execute real trades on HyperLiquid/Extended (← much later)
-5. Target: $500/month profit from crypto trading
-
-**But for now**: Just focus on data + AI decisions, nothing else.
-
----
-
-## User Context
-
-**Profile:**
-- Age: 23, completing software dev degree
-- Budget: Limited (student) - prefer free/cheap APIs over hardware
-- Experience: Building this to learn AI/trading/systems
-- Goal: $500/month profit eventually, but skills/portfolio are valuable too
-
-**Strategy:**
-- Use APIs instead of buying GPU hardware
-- Start simple, add complexity only when needed
-- Validate with data before spending money
-- Build for learning first, profit second
 
 ---
 
 ## Guidelines for Claude Code
 
-### When Building Features
-1. **Ask first** - Don't create 10 files without asking
-2. **One file at a time** - Build incrementally
-3. **Test immediately** - Don't build untested code
-4. **Keep it simple** - Readable > clever
-5. **Real data only** - No synthetic/fake data
+### DO:
+- ✅ Ask before creating multiple files
+- ✅ Build one component at a time
+- ✅ Use real data (no synthetic/fake data)
+- ✅ Keep code simple and readable
+- ✅ Update requirements.txt when adding packages
 
-### When User Asks for Changes
-1. **Understand the goal** - Ask clarifying questions
-2. **Propose simple solution** - Not complex multi-file systems
-3. **Check API costs** - Prefer free tiers
-4. **Update requirements.txt** - Keep dependencies tracked
-5. **Don't move files** - Only create new ones
-
-### What NOT to Do
-- ❌ Don't build complex multi-agent systems
-- ❌ Don't create 5+ files at once
-- ❌ Don't suggest buying hardware
-- ❌ Don't use local LLMs (APIs are cheaper)
-- ❌ Don't write papers trading code until data works
-- ❌ Don't connect to exchanges until AI is validated
+### DON'T:
+- ❌ Move files without asking
+- ❌ Build complex multi-agent systems
+- ❌ Use local LLMs (APIs are cheaper)
+- ❌ Create 5+ files at once
+- ❌ Build trading execution until data + AI validated
 
 ---
 
-## Next Steps (Immediate)
+## Project Goal
 
-1. **Get Claude API key** - console.anthropic.com ($5 free credit)
-2. **Build crypto_prices.py** - Simple CoinGecko scraper
-3. **Build trading_decision.py** - Claude integration for decisions
-4. **Test the full flow** - Data → AI → Decisions → Log
-5. **Review decisions** - Validate AI makes sense
-
----
-
-## Remember
-
-**This is a learning project first, profit second.**
-
-Even if it never makes $500/month:
-- You're learning AI systems
-- You're building a portfolio project
-- You're gaining skills worth $80-120k/year jobs
-- You're understanding markets/trading/data
+**Build a learning-first crypto trading system:**
+- Learn AI/data systems
+- Build portfolio project
+- Gain real-world skills
+- (Eventually) Target $500/month profit
 
 **Keep it simple. Build step-by-step. Test everything.**
+
+
+## API Models - What to Use Where
+
+### Data Collection Layer (Continuous Monitoring)
+**Primary: Gemini 2.5 Flash-Lite**
+- Pricing: $0.10/$0.40 per million tokens
+- Context: 1M tokens (can process entire order books, news feeds, history)
+- Speed: Sub-second latency
+- Best for: High-volume data processing, rapid pattern detection, news summarization
+- Cost: ~$1/month with caching
+
+**Backup: DeepSeek V3.2-Exp**
+- Pricing: $0.028/$0.28 per million tokens
+- Context: 128K tokens
+- Best for: Cost-sensitive bulk preprocessing
+- Warning: Experimental status, use as secondary only
+
+### Trading Decision Layer (Real-Time Signals)
+**Primary: Claude Sonnet 4**
+- Pricing: $3/$15 per million tokens (effectively $1.80/$15 with 90% caching)
+- Context: 200K tokens
+- Live results: +28% returns in Alpha Arena
+- Special feature: Hybrid reasoning (fast OR deep thinking as needed)
+- Best for: Entry/exit signals, position sizing, multi-factor analysis, real-time tactical decisions
+- Latency: Fast in standard mode, slower in deep thinking mode
+
+**Alternative for Strategic Analysis: DeepSeek R1**
+- Pricing: $0.55/$2.19 per million tokens
+- Live results: +35% returns in Alpha Arena
+- Best for: Strategic planning, portfolio rebalancing, deep market analysis
+- Note: Always does extended reasoning (slower), not ideal for real-time trades
+
+### Deep Analysis Layer (Historical Patterns)
+**Use: Gemini 2.5 Pro**
+- Pricing: $1.25/$10 per million tokens
+- Context: 1M-2M tokens
+- Best for: Multi-factor synthesis, historical pattern analysis
+- Warning: Lost 39% in live trading when used for real-time decisions (use for research only)

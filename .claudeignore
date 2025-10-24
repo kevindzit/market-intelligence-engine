@@ -5,7 +5,11 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-.env
 *.log
 *.tmp
 .cache/
+archived_complex_code/
+chroma_db_news/
+*.json
+cookies.json
+twikit/

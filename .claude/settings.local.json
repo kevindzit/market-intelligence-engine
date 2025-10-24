@@ -25,7 +25,8 @@
       "Bash(git rm:*)",
       "Bash(dir:*)",
       "Read(//c/tmp/**)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(psql:*)"
     ],
     "deny": [],
     "ask": []

@@ -48,3 +48,39 @@ WHERE table_name = 'congressional_trades';
 SELECT * FROM economic_indicators;
 
 SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
+
+
+
+-- check twitter dbu overall
+
+SELECT token, COUNT(*), AVG(sentiment_score) 
+FROM twitter_sentiment 
+GROUP BY token;
+
+
+
+-- Track Sentiment Trends
+
+Query to see if sentiment is improving or getting worse:
+SELECT 
+    DATE_TRUNC('hour', scraped_at) as hour,
+    token,
+    AVG(sentiment_score) as avg_sentiment
+FROM twitter_sentiment
+WHERE scraped_at > NOW() - INTERVAL '24 hours'
+GROUP BY hour, token
+ORDER BY hour DESC;
+
+
+
+-- Find Most Influential Tweets
+
+SELECT token, tweet_text, sentiment_score,
+       (retweet_count + like_count) as engagement
+FROM twitter_sentiment
+WHERE sentiment_score > 0.5
+ORDER BY engagement DESC
+LIMIT 20;
+
+
+

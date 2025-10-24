@@ -75,9 +75,9 @@ scrapers:
   - name: Twitter Sentiment Analyzer
     script: crypto_scrapers/twitter_sentiment.py
     category: crypto
-    description: Analyzes Twitter sentiment for crypto tokens using FinBERT
-    enabled: true
-    free_tier: "Unlimited (local model)"
+    description: Scrapes Twitter for crypto sentiment (BTC, ETH, SOL, PEPE, DOGE)
+    enabled: false  # Set to true after running twitter_login.py
+    free_tier: "Free (twikit - no API cost)"
     interval: "15 minutes"
 
 # ==================== FUTURE SCRAPERS ====================
