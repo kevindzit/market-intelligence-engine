@@ -62,6 +62,9 @@ TOKENS_TO_TRACK = ["bitcoin", "ethereum", "solana", "pepe", "dogecoin"]
 TWEETS_PER_TOKEN = 20
 IGNORE_WORDS = ['discord', 'telegram', 'airdrop', 't.co/scam', 'giveaway']
 
+WHALE_THRESHOLD = 100000
+HIGH_INFLUENCE_THRESHOLD = 1000000
+
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '54594')
 DB_NAME = os.getenv('DB_NAME', 'postgres')
@@ -134,6 +137,59 @@ class TwitterSentimentScraper:
                         labels.append("neutral")
 
         return sentiments, labels
+
+    def calculate_weighted_score(self, tweet_data, sentiment_score):
+        """Calculate influence-weighted score and alert level"""
+
+        followers = tweet_data.get('followers', 0)
+        retweets = tweet_data.get('retweets', 0)
+        likes = tweet_data.get('likes', 0)
+
+        if followers >= 10_000_000:
+            multiplier = 1000
+        elif followers >= 1_000_000:
+            multiplier = 100
+        elif followers >= 100_000:
+            multiplier = 10
+        elif followers >= 10_000:
+            multiplier = 2
+        else:
+            multiplier = 1
+
+        engagement_boost = 1 + ((likes + retweets * 2) / 10000)
+        weighted = sentiment_score * multiplier * engagement_boost
+
+        if weighted > 500 or (followers > 10_000_000 and abs(sentiment_score) > 0.5):
+            alert_level = "EXTREME"
+        elif weighted > 100 or (followers > 1_000_000 and abs(sentiment_score) > 0.6):
+            alert_level = "HIGH"
+        elif weighted > 50 or (followers > 100_000 and abs(sentiment_score) > 0.7):
+            alert_level = "MEDIUM"
+        elif weighted > 10:
+            alert_level = "LOW"
+        else:
+            alert_level = None
+
+        is_whale = followers >= WHALE_THRESHOLD
+
+        return weighted, alert_level, is_whale
+
+    def print_alert(self, alert_level, tweet_data, sentiment_score, weighted_score):
+        """Print formatted alert for high-impact tweets"""
+        if alert_level not in ["HIGH", "EXTREME"]:
+            return
+
+        print("\n" + "="*70)
+        print(f"{'🚨' * 3} {alert_level} ALERT DETECTED {'🚨' * 3}")
+        print("="*70)
+        print(f"User:       @{tweet_data['username']}")
+        print(f"Followers:  {tweet_data['followers']:,}")
+        print(f"Token:      {tweet_data['token'].upper()}")
+        print(f"Sentiment:  {sentiment_score:.3f} ({'POSITIVE' if sentiment_score > 0 else 'NEGATIVE'})")
+        print(f"Weighted:   {weighted_score:.1f}")
+        print(f"Engagement: {tweet_data['retweets']} RTs, {tweet_data['likes']} likes")
+        print(f"Tweet:      {tweet_data['text'][:120]}...")
+        print("="*70 + "\n")
 
     def init_twitter_client(self):
         if not os.path.exists("cookies.json"):
@@ -249,15 +305,23 @@ class TwitterSentimentScraper:
         cursor = self.db_conn.cursor()
         saved = 0
         duplicates = 0
+        alerts = []
 
         for i, tweet in enumerate(tweets_data):
             try:
+                weighted_score, alert_level, is_whale = self.calculate_weighted_score(
+                    tweet, sentiments[i]
+                )
+
+                if alert_level in ["HIGH", "EXTREME"]:
+                    alerts.append((alert_level, tweet, sentiments[i], weighted_score))
+
                 cursor.execute("""
                     INSERT INTO twitter_sentiment
                     (tweet_id, token, tweet_text, sentiment_score, sentiment_label,
                      author_username, author_followers, retweet_count, like_count,
-                     tweet_created_at, scraped_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     tweet_created_at, scraped_at, weighted_score, alert_level, is_whale)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (tweet_id, token) DO NOTHING
                 """, (
                     tweet['tweet_id'],
@@ -270,7 +334,10 @@ class TwitterSentimentScraper:
                     tweet['retweets'],
                     tweet['likes'],
                     tweet['created_at'],
-                    datetime.now()
+                    datetime.now(),
+                    round(weighted_score, 4),
+                    alert_level,
+                    is_whale
                 ))
 
                 self.db_conn.commit()
@@ -287,6 +354,11 @@ class TwitterSentimentScraper:
         cursor.close()
 
         print(f"[OK] Saved {saved} new tweets, {duplicates} duplicates skipped")
+
+        if alerts:
+            print(f"\n[ALERTS] Found {len(alerts)} high-impact tweets!")
+            for alert_level, tweet, sentiment, weighted in alerts:
+                self.print_alert(alert_level, tweet, sentiment, weighted)
 
     async def run(self):
         print("\n" + "="*60)
@@ -308,22 +380,28 @@ class TwitterSentimentScraper:
 
             cursor = self.db_conn.cursor()
             cursor.execute("""
-                SELECT token, AVG(sentiment_score), COUNT(*)
+                SELECT token,
+                       AVG(sentiment_score) as avg_sentiment,
+                       AVG(weighted_score) as avg_weighted,
+                       MAX(weighted_score) as max_weighted,
+                       COUNT(*) as tweet_count,
+                       COUNT(*) FILTER (WHERE is_whale = true) as whale_count
                 FROM twitter_sentiment
                 WHERE scraped_at > NOW() - INTERVAL '1 hour'
                 GROUP BY token
-                ORDER BY token
+                ORDER BY AVG(weighted_score) DESC
             """)
 
-            print("\n" + "="*60)
-            print("Sentiment Summary (Last Hour)")
-            print("="*60)
+            print("\n" + "="*80)
+            print("Sentiment Summary (Last Hour - Weighted by Influence)")
+            print("="*80)
+            print(f"{'Token':<12} | {'Raw':<8} | {'Weighted':<10} | {'Max Impact':<12} | {'Tweets':<8} | {'Whales':<6}")
+            print("-" * 80)
 
             for row in cursor.fetchall():
-                token, avg_sent, count = row
-                score_pct = (float(avg_sent) + 1) * 50
-                sentiment = "POSITIVE" if avg_sent > 0 else "NEGATIVE" if avg_sent < 0 else "NEUTRAL"
-                print(f"{token:12} | Score: {score_pct:5.1f}/100 | {sentiment:8} | Tweets: {count}")
+                token, avg_sent, avg_weighted, max_weighted, count, whale_count = row
+                sentiment = "POS" if avg_sent > 0 else "NEG" if avg_sent < 0 else "NEU"
+                print(f"{token:<12} | {avg_sent:>6.2f} | {avg_weighted:>8.1f} | {max_weighted:>10.1f} | {count:>6} | {whale_count:>4}")
 
             cursor.close()
         else:
