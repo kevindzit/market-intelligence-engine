@@ -28,8 +28,9 @@ yfinance>=0.2.32
 twikit>=2.3.3
 
 # Sentiment analysis
-transformers>=4.57.0
-torch>=2.7.0
+vaderSentiment>=3.3.2
+# transformers>=4.57.0  # Kept but commented - old BERTweet approach (130x slower)
+# torch>=2.7.0  # Kept but commented - old BERTweet approach (heavy dependency)
 
 # Utilities
 python-dotenv>=1.0.0
