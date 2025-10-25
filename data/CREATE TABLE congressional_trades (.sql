@@ -66,12 +66,3 @@ CREATE TABLE company_profiles (
 
 
 
-ALTER TABLE twitter_sentiment 
-ADD COLUMN IF NOT EXISTS weighted_score NUMERIC(10,4),
-ADD COLUMN IF NOT EXISTS alert_level VARCHAR(20),
-ADD COLUMN IF NOT EXISTS is_whale BOOLEAN DEFAULT FALSE;
-
--- Create index for fast whale queries
-CREATE INDEX IF NOT EXISTS idx_alert_level ON twitter_sentiment(alert_level);
-CREATE INDEX IF NOT EXISTS idx_weighted_score ON twitter_sentiment(weighted_score DESC);
-CREATE INDEX IF NOT EXISTS idx_is_whale ON twitter_sentiment(is_whale);
