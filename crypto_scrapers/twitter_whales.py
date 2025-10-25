@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
 from monitors.health_monitor import HealthMonitor
+from monitors.refresh_cookies import refresh_cookies, save_cookies
 
 # Patch httpx for twikit
 original_client = httpx.Client
@@ -98,7 +99,8 @@ class WhaleTracker:
         self.vader = None
         self.db_conn = None
         self.last_tweet_ids = defaultdict(str)  # Track last seen tweet per whale
-        self.health = HealthMonitor('twitter_whales', alert_threshold=3)
+        self.health = HealthMonitor('twitter_whales', alert_threshold=10)
+        self.cookies_refreshed = False  # Track if we already tried refreshing this cycle
 
     def init_db(self):
         try:
@@ -154,7 +156,25 @@ class WhaleTracker:
         }
 
         self.vader.lexicon.update(crypto_lexicon)
-        print("[OK] VADER initialized with crypto lexicon")
+        print("[OK] Sentiment analyzer initialized")
+
+    def auto_refresh_cookies(self):
+        """Automatically refresh cookies when they expire"""
+        print("\n[AUTO-REFRESH] Cookies expired, refreshing...")
+        try:
+            cookies = refresh_cookies(headless=False)
+            if cookies and save_cookies(cookies):
+                print("[AUTO-REFRESH] Cookies refreshed successfully!")
+                # Reload cookies into client
+                self.client.load_cookies("cookies.json")
+                self.cookies_refreshed = True
+                return True
+            else:
+                print("[AUTO-REFRESH] Failed to refresh cookies")
+                return False
+        except Exception as e:
+            print(f"[AUTO-REFRESH] Error: {e}")
+            return False
 
     def init_twitter_client(self):
         """Initialize twikit client with cookies.json"""
@@ -286,6 +306,13 @@ class WhaleTracker:
             print(f"Rate limited. Waiting {int(wait_seconds)}s...")
             await asyncio.sleep(wait_seconds)
         except Exception as e:
+            error_msg = str(e).lower()
+            # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
+            if ('404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg) and not self.cookies_refreshed:
+                print(f"    [WARN] Authentication error detected: {e}")
+                if self.auto_refresh_cookies():
+                    print(f"    [RETRY] Retrying fetch for @{username}...")
+                    return await self.get_whale_tweets(username)
             print(f"    [ERROR] Failed to fetch @{username}: {e}")
 
         return collected
@@ -375,17 +402,9 @@ class WhaleTracker:
 
         print(f"\n[OK] Saved {saved} new whale tweets")
 
-        # Alert on high signal tweets
+        # Show count of high signal tweets without previews
         if high_signal_tweets:
-            print("\n" + "="*70)
-            print("🐋 WHALE ALERTS - HIGH SIGNAL TWEETS 🐋")
-            print("="*70)
-            for alert in high_signal_tweets:
-                tokens_str = ', '.join(alert['tokens'])
-                print(f"@{alert['username']} ({alert['signal']:.1f}x signal)")
-                print(f"Tokens: {tokens_str}")
-                print(f"Preview: {alert['text_preview']}...")
-                print("-"*70)
+            print(f"[INFO] {len(high_signal_tweets)} high-signal tweets detected (saved to database)")
 
         return saved
 
@@ -393,6 +412,9 @@ class WhaleTracker:
         """Check all whale accounts"""
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting whale check cycle")
         print(f"Monitoring {len(WHALE_ACCOUNTS)} whale accounts...")
+
+        # Reset cookie refresh flag for this cycle
+        self.cookies_refreshed = False
 
         all_tweets = []
 
@@ -432,6 +454,7 @@ class WhaleTracker:
 
         # Health status
         self.health.print_health_summary()
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Cycle completed")
 
     async def run(self):
         """Main loop - runs every 10 minutes"""

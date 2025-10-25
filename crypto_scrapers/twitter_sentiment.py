@@ -1,8 +1,6 @@
 """
-Twitter Sentiment Scraper V2 - Optimized for Profitability
-Uses VADER (130x faster, proven profitable) instead of transformers
-Tracks volume as PRIMARY signal (0.841 correlation with price)
-Aggressive bot filtering (64-80% of crypto Twitter are bots)
+Twitter Sentiment Scraper
+Tracks crypto sentiment with volume tracking and bot filtering
 """
 
 import os
@@ -24,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
 from monitors.health_monitor import HealthMonitor
+from monitors.refresh_cookies import refresh_cookies, save_cookies
 
 # Patch httpx for twikit
 original_client = httpx.Client
@@ -86,7 +85,7 @@ DB_NAME = os.getenv('DB_NAME', 'postgres')
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 
-class TwitterSentimentV2:
+class TwitterSentiment:
     def __init__(self):
         self.client = None
         self.vader = None
@@ -94,6 +93,7 @@ class TwitterSentimentV2:
         self.volume_baseline = defaultdict(lambda: {'count': 20.0, 'history': []})
         self.last_poll_time = defaultdict(lambda: datetime.now() - timedelta(hours=1))
         self.health = HealthMonitor('twitter_sentiment', alert_threshold=3)
+        self.cookies_refreshed = False  # Track if we already tried refreshing this cycle
 
     def init_db(self):
         try:
@@ -153,7 +153,7 @@ class TwitterSentimentV2:
         }
 
         self.vader.lexicon.update(crypto_lexicon)
-        print("[OK] VADER initialized with crypto lexicon")
+        print("[OK] Sentiment analyzer initialized")
 
     def calculate_bot_probability(self, user_data):
         """Calculate probability that an account is a bot"""
@@ -261,6 +261,24 @@ class TwitterSentimentV2:
 
         return spike_ratio
 
+    def auto_refresh_cookies(self):
+        """Automatically refresh cookies when they expire"""
+        print("\n[AUTO-REFRESH] Cookies expired, refreshing...")
+        try:
+            cookies = refresh_cookies(headless=False)
+            if cookies and save_cookies(cookies):
+                print("[AUTO-REFRESH] Cookies refreshed successfully!")
+                # Reload cookies into client
+                self.client.load_cookies("cookies.json")
+                self.cookies_refreshed = True
+                return True
+            else:
+                print("[AUTO-REFRESH] Failed to refresh cookies")
+                return False
+        except Exception as e:
+            print(f"[AUTO-REFRESH] Error: {e}")
+            return False
+
     def init_twitter_client(self):
         """Initialize twikit client with cookies.json"""
         if not os.path.exists("cookies.json"):
@@ -336,6 +354,13 @@ class TwitterSentimentV2:
             print(f"Rate limited. Waiting {int(wait_seconds)}s...")
             time.sleep(wait_seconds)
         except Exception as e:
+            error_msg = str(e).lower()
+            # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
+            if ('404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg) and not self.cookies_refreshed:
+                print(f"[WARN] Authentication error detected: {e}")
+                if self.auto_refresh_cookies():
+                    print(f"[RETRY] Retrying search for {token}...")
+                    return await self.get_tweets_for_token(token)
             print(f"[ERROR] Failed to fetch {token}: {e}")
 
         return collected
@@ -366,7 +391,7 @@ class TwitterSentimentV2:
             pump_score = self.detect_pump_pattern(tweets)
 
             for tweet in tweets:
-                # VADER sentiment (130x faster than transformers)
+                # Analyze sentiment
                 sentiment = self.analyze_sentiment_vader(tweet['text'])
 
                 # Calculate influence-weighted score
@@ -459,6 +484,9 @@ class TwitterSentimentV2:
         """Run one collection cycle"""
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting collection cycle")
 
+        # Reset cookie refresh flag for this cycle
+        self.cookies_refreshed = False
+
         all_tweets = []
 
         # Collect main tokens (meme coins with high Twitter sensitivity)
@@ -507,12 +535,13 @@ class TwitterSentimentV2:
 
         # Health status
         self.health.print_health_summary()
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Cycle completed")
 
     async def run(self):
         """Main loop - runs every 5 minutes"""
         print("\n" + "="*60)
-        print("Twitter Sentiment V2 - Optimized for Profit")
-        print("VADER (130x faster) + Volume Tracking + Bot Filtering")
+        print("Twitter Sentiment Scraper")
+        print("Volume Tracking + Bot Filtering")
         print("="*60)
 
         self.init_db()
@@ -534,7 +563,7 @@ class TwitterSentimentV2:
                 await asyncio.sleep(60)  # Wait 1 min on error
 
 async def main():
-    scraper = TwitterSentimentV2()
+    scraper = TwitterSentiment()
     await scraper.run()
 
 if __name__ == "__main__":
