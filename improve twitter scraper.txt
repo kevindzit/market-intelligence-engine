@@ -1,0 +1,20 @@
+
+
+
+
+No monitoring of reply chains between whales
+Missing quote tweets with high engagement
+
+Add Health Monitoring:
+# Add to the scraper
+self.last_successful_scrape = {}
+self.consecutive_failures = 0
+
+# Alert if no data for 15+ minutes
+if time_since_last_success > 900:
+    send_alert("Twitter scraper down!")
+Implement Whale Whitelist:
+
+
+
+build auto cookie fetcher

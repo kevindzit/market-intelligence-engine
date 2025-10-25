@@ -46,7 +46,7 @@ htmlcov/
 *.db
 *.sqlite3
 
-archived_complex_code/
+archived/
 moon-dev-reference/
 twikit/
 

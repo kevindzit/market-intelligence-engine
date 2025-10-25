@@ -26,7 +26,9 @@
       "Bash(dir:*)",
       "Read(//c/tmp/**)",
       "Bash(tree:*)",
-      "Bash(psql:*)"
+      "Bash(psql:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []

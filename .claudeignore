@@ -8,7 +8,7 @@ venv/
 *.log
 *.tmp
 .cache/
-archived_complex_code/
+archived/
 chroma_db_news/
 *.json
 cookies.json

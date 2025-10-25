@@ -62,7 +62,7 @@ TOKENS_TO_TRACK = [
 ]
 
 # Use BTC only as market indicator, not trade target
-MARKET_INDICATORS = ["bitcoin"]
+MARKET_INDICATORS = ["BITCOIN"]  # Uppercase for consistency
 
 TWEETS_PER_TOKEN = 30  # 5 tokens × 30 tweets = ~30 searches (60% rate limit usage)
 POLLING_INTERVAL = 5 * 60  # 5 minutes (optimal for signal freshness)
@@ -309,7 +309,7 @@ class TwitterSentimentV2:
 
                     tweet_data = {
                         'tweet_id': tweet.id,
-                        'token': token,
+                        'token': token.upper(),  # Always uppercase for consistency
                         'text': tweet.text,
                         'username': getattr(user, 'screen_name', 'unknown') if user else 'unknown',
                         'followers': getattr(user, 'followers_count', 0) if user else 0,
@@ -405,8 +405,8 @@ class TwitterSentimentV2:
                         (tweet_id, token, tweet_text, sentiment_score, sentiment_label,
                          author_username, author_followers, retweet_count, like_count,
                          tweet_created_at, scraped_at, weighted_score, alert_level,
-                         is_whale, volume_spike, bot_probability, pump_score)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         is_whale, volume_spike, bot_probability, pump_score, source)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tweet_id, token) DO NOTHING
                     """, (
                         tweet['tweet_id'],
@@ -425,7 +425,8 @@ class TwitterSentimentV2:
                         tweet['followers'] >= 100000,
                         round(volume_spike, 2),
                         round(bot_prob, 3),
-                        round(pump_score, 3) if pump_score > 0.5 else None
+                        round(pump_score, 3) if pump_score > 0.5 else None,
+                        'general_search'  # Source identifier for general meme coin searches
                     ))
 
                     if cursor.rowcount > 0:
