@@ -23,6 +23,8 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
+from monitors.health_monitor import HealthMonitor
+
 # Patch httpx for twikit
 original_client = httpx.Client
 
@@ -91,6 +93,7 @@ class TwitterSentimentV2:
         self.db_conn = None
         self.volume_baseline = defaultdict(lambda: {'count': 20.0, 'history': []})
         self.last_poll_time = defaultdict(lambda: datetime.now() - timedelta(hours=1))
+        self.health = HealthMonitor('twitter_sentiment', alert_threshold=3)
 
     def init_db(self):
         try:
@@ -340,7 +343,7 @@ class TwitterSentimentV2:
     def save_to_db(self, all_tweets):
         """Save tweets with volume tracking and enhanced metrics"""
         if not all_tweets:
-            return
+            return 0
 
         cursor = self.db_conn.cursor()
 
@@ -450,6 +453,8 @@ class TwitterSentimentV2:
                 print(f"{token}: {spike:.1f}x normal volume ({count} tweets) - {signal}")
             print("="*70)
 
+        return saved
+
     async def run_cycle(self):
         """Run one collection cycle"""
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting collection cycle")
@@ -466,8 +471,12 @@ class TwitterSentimentV2:
             tweets = await self.get_tweets_for_token(token)
             all_tweets.extend(tweets[:5])  # Only 5 tweets for indicators
 
+        # Save tweets and track health
+        saved = 0
         if all_tweets:
-            self.save_to_db(all_tweets)
+            saved = self.save_to_db(all_tweets)
+
+        self.health.record_cycle(saved)
 
         # Show summary
         cursor = self.db_conn.cursor()
@@ -494,6 +503,9 @@ class TwitterSentimentV2:
             print(f"{token:<10} | {count:<8} | {sentiment:>9.3f} | {vol_str:<10} | {human_str:<10}")
 
         cursor.close()
+
+        # Health status
+        self.health.print_health_summary()
 
     async def run(self):
         """Main loop - runs every 5 minutes"""

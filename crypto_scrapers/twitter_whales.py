@@ -21,6 +21,8 @@ from collections import defaultdict
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
+from monitors.health_monitor import HealthMonitor
+
 # Patch httpx for twikit
 original_client = httpx.Client
 
@@ -96,6 +98,7 @@ class WhaleTracker:
         self.vader = None
         self.db_conn = None
         self.last_tweet_ids = defaultdict(str)  # Track last seen tweet per whale
+        self.health = HealthMonitor('twitter_whales', alert_threshold=3)
 
     def init_db(self):
         try:
@@ -290,7 +293,7 @@ class WhaleTracker:
     def save_to_db(self, all_tweets):
         """Save whale tweets with special handling"""
         if not all_tweets:
-            return
+            return 0
 
         cursor = self.db_conn.cursor()
         saved = 0
@@ -384,6 +387,8 @@ class WhaleTracker:
                 print(f"Preview: {alert['text_preview']}...")
                 print("-"*70)
 
+        return saved
+
     async def run_cycle(self):
         """Check all whale accounts"""
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting whale check cycle")
@@ -395,8 +400,12 @@ class WhaleTracker:
             tweets = await self.get_whale_tweets(username)
             all_tweets.extend(tweets)
 
+        # Save tweets and track health
+        saved = 0
         if all_tweets:
-            self.save_to_db(all_tweets)
+            saved = self.save_to_db(all_tweets)
+
+        self.health.record_cycle(saved)
 
         # Show summary
         cursor = self.db_conn.cursor()
@@ -420,6 +429,9 @@ class WhaleTracker:
         print(f"  Max signal strength: {max_signal:.1f}" if max_signal else "  Max signal: N/A")
 
         cursor.close()
+
+        # Health status
+        self.health.print_health_summary()
 
     async def run(self):
         """Main loop - runs every 10 minutes"""
