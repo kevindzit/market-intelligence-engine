@@ -478,31 +478,32 @@ class TwitterSentimentV2:
 
         self.health.record_cycle(saved)
 
-        # Show summary
-        cursor = self.db_conn.cursor()
-        cursor.execute("""
-            SELECT token,
-                   COUNT(*) as tweets_5min,
-                   AVG(sentiment_score) as avg_sentiment,
-                   MAX(volume_spike) as max_volume_spike,
-                   AVG(CASE WHEN bot_probability < 0.5 THEN sentiment_score END) as human_sentiment
-            FROM twitter_sentiment
-            WHERE scraped_at > NOW() - INTERVAL '5 minutes'
-            GROUP BY token
-            ORDER BY max_volume_spike DESC NULLS LAST
-        """)
+        # Show cycle summary from collected tweets
+        if all_tweets:
+            by_token = defaultdict(list)
+            for tweet in all_tweets:
+                by_token[tweet['token']].append(tweet)
 
-        print("\n5-Minute Summary:")
-        print(f"{'Token':<10} | {'Tweets':<8} | {'Sentiment':<10} | {'Volume':<10} | {'Human Sent':<10}")
-        print("-" * 60)
+            print("\nCycle Summary:")
+            print(f"{'Token':<10} | {'Tweets':<8} | {'Human %':<10} | {'Avg Sent':<10}")
+            print("-" * 50)
 
-        for row in cursor.fetchall():
-            token, count, sentiment, volume, human_sent = row
-            vol_str = f"{volume:.1f}x" if volume else "baseline"
-            human_str = f"{human_sent:.3f}" if human_sent else "N/A"
-            print(f"{token:<10} | {count:<8} | {sentiment:>9.3f} | {vol_str:<10} | {human_str:<10}")
+            for token in sorted(by_token.keys(), key=lambda t: len(by_token[t]), reverse=True):
+                tweets = by_token[token]
+                count = len(tweets)
+                human_count = sum(1 for t in tweets if t.get('followers', 0) >= 10)  # Basic human filter
+                human_pct = (human_count / count * 100) if count > 0 else 0
 
-        cursor.close()
+                # Calculate average sentiment from the actual tweets
+                sentiments = []
+                for tweet in tweets:
+                    sent = self.analyze_sentiment_vader(tweet['text'])
+                    sentiments.append(sent)
+                avg_sent = sum(sentiments) / len(sentiments) if sentiments else 0
+
+                print(f"{token:<10} | {count:<8} | {human_pct:>8.0f}% | {avg_sent:>9.3f}")
+        else:
+            print("\nNo tweets collected this cycle.")
 
         # Health status
         self.health.print_health_summary()
