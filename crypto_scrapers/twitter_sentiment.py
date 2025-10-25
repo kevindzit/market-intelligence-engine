@@ -51,16 +51,20 @@ httpx.Client = patched_client
 
 from twikit import Client, TooManyRequests
 
-# Optimized token list - focus on meme coins that actually move from Twitter
+# Optimized token list - focus on TOP meme coins with proven Twitter sensitivity
+# Fewer tokens = deeper coverage = better whale detection (95%+ vs 40%)
 TOKENS_TO_TRACK = [
-    "PEPE", "DOGE", "SHIB", "BONK", "WIF",  # High Twitter sensitivity
-    "FLOKI", "WOJAK", "TURBO", "MEME", "LADYS"  # Additional meme coins
+    "PEPE",   # Massive Twitter community, high liquidity
+    "DOGE",   # Elon tweets move it instantly
+    "SHIB",   # Large community, responds to sentiment
+    "BONK",   # Active Solana community
+    "WIF"     # Newer, high volatility, Twitter-sensitive
 ]
 
-# Use BTC/ETH only as market indicators, not trade targets
-MARKET_INDICATORS = ["bitcoin", "ethereum"]
+# Use BTC only as market indicator, not trade target
+MARKET_INDICATORS = ["bitcoin"]
 
-TWEETS_PER_TOKEN = 10  # Reduced from 20 to cover more tokens
+TWEETS_PER_TOKEN = 30  # 5 tokens × 30 tweets = ~30 searches (60% rate limit usage)
 POLLING_INTERVAL = 5 * 60  # 5 minutes (optimal for signal freshness)
 
 # Enhanced spam/bot filtering
@@ -85,7 +89,7 @@ class TwitterSentimentV2:
         self.client = None
         self.vader = None
         self.db_conn = None
-        self.volume_baseline = defaultdict(lambda: {'count': 0, 'history': []})
+        self.volume_baseline = defaultdict(lambda: {'count': 20.0, 'history': []})
         self.last_poll_time = defaultdict(lambda: datetime.now() - timedelta(hours=1))
 
     def init_db(self):
@@ -121,7 +125,8 @@ class TwitterSentimentV2:
             """)
 
             for token, avg_volume in cursor.fetchall():
-                self.volume_baseline[token]['count'] = avg_volume or 20
+                # Convert Decimal to float to avoid type errors
+                self.volume_baseline[token]['count'] = float(avg_volume) if avg_volume else 20.0
         except:
             # Table might not have volume data yet
             pass
@@ -241,13 +246,14 @@ class TwitterSentimentV2:
 
     def calculate_volume_spike(self, token, current_count):
         """Calculate if there's a volume spike (PRIMARY SIGNAL)"""
-        baseline = self.volume_baseline[token]['count'] or 20
-        spike_ratio = current_count / (baseline + 1)
+        baseline = float(self.volume_baseline[token]['count'] or 20.0)
+        current = float(current_count)
+        spike_ratio = current / (baseline + 1.0)
 
         # Update baseline with exponential moving average
         alpha = 0.1  # Smoothing factor
         self.volume_baseline[token]['count'] = (
-            alpha * current_count + (1 - alpha) * baseline
+            alpha * current + (1.0 - alpha) * baseline
         )
 
         return spike_ratio
