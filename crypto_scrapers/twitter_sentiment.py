@@ -65,8 +65,7 @@ class TwitterSentiment:
         self.db_conn = None
         self.volume_baseline = defaultdict(lambda: {'count': 20.0, 'history': []})
         self.last_poll_time = defaultdict(lambda: datetime.now() - timedelta(hours=1))
-        self.health = HealthMonitor('twitter_sentiment', alert_threshold=3)
-        self.cookies_refreshed = False  # Track if we already tried refreshing this cycle
+        self.health = HealthMonitor('twitter_sentiment', alert_threshold=5)  # 5 empty cycles before alert (adjusted for MIN_FOLLOWERS filter)
 
         # Velocity tracking - stores last 3 cycles per token
         self.sentiment_history = defaultdict(list)  # {token: [{'time': ..., 'sentiment': ..., 'volume_spike': ...}]}
@@ -228,12 +227,15 @@ class TwitterSentiment:
         except Exception as e:
             error_msg = str(e).lower()
             # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
-            if ('404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg) and not self.cookies_refreshed:
+            if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                 print(f"[WARN] Authentication error detected: {e}")
+                # auto_refresh_cookies now retries up to 10 times internally
                 if auto_refresh_cookies(self.client):
-                    self.cookies_refreshed = True
-                    print(f"[RETRY] Retrying search for {token}...")
+                    print(f"[RETRY] Cookies refreshed successfully, retrying search for {token}...")
                     return await self.get_tweets_for_token(token)
+                else:
+                    print(f"[FATAL] Cookie refresh failed after all attempts for {token}")
+                    raise Exception(f"Unable to refresh cookies after 10 attempts")
             print(f"[ERROR] Failed to fetch {token}: {e}")
 
         return collected
@@ -382,9 +384,6 @@ class TwitterSentiment:
     async def run_cycle(self):
         """Run one collection cycle"""
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting collection cycle")
-
-        # Reset cookie refresh flag for this cycle
-        self.cookies_refreshed = False
 
         all_tweets = []
 

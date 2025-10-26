@@ -113,7 +113,6 @@ class WhaleTracker:
         self.db_conn = None
         self.last_tweet_ids = defaultdict(str)  # Track last seen tweet per whale
         self.health = HealthMonitor('twitter_whales', alert_threshold=10)
-        self.cookies_refreshed = False  # Track if we already tried refreshing this cycle
 
         # Velocity tracking - stores last 3 cycles per token
         self.sentiment_history = defaultdict(list)  # {token: [{'time': ..., 'sentiment': ..., 'tweet_count': ...}]}
@@ -308,12 +307,15 @@ class WhaleTracker:
         except Exception as e:
             error_msg = str(e).lower()
             # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
-            if ('404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg) and not self.cookies_refreshed:
+            if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                 print(f"    [WARN] Authentication error detected: {e}")
+                # auto_refresh_cookies now retries up to 10 times internally
                 if auto_refresh_cookies(self.client):
-                    self.cookies_refreshed = True
-                    print(f"    [RETRY] Retrying fetch for @{username}...")
+                    print(f"    [RETRY] Cookies refreshed successfully, retrying fetch for @{username}...")
                     return await self.get_whale_tweets(username)
+                else:
+                    print(f"    [FATAL] Cookie refresh failed after all attempts for @{username}")
+                    raise Exception(f"Unable to refresh cookies after 10 attempts")
             print(f"    [ERROR] Failed to fetch @{username}: {e}")
 
         return collected
@@ -429,9 +431,6 @@ class WhaleTracker:
         """Check all whale accounts"""
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Starting whale check cycle")
         print(f"Monitoring {len(WHALE_ACCOUNTS)} whale accounts...")
-
-        # Reset cookie refresh flag for this cycle
-        self.cookies_refreshed = False
 
         all_tweets = []
 

@@ -387,29 +387,46 @@ def init_twitter_client(cookies_path="cookies.json"):
         print(f"[ERROR] Twitter client init failed: {e}")
         sys.exit(1)
 
-def auto_refresh_cookies(client, cookies_path="cookies.json"):
-    """Automatically refresh cookies when they expire
+def auto_refresh_cookies(client, cookies_path="cookies.json", max_attempts=10):
+    """Automatically refresh cookies when they expire - retries up to 10 times
+
+    Sometimes cookie refresh needs multiple attempts to get valid credentials.
+    This function will keep trying until it gets working cookies or hits max attempts.
 
     Args:
         client: twikit Client instance
         cookies_path: Path to save refreshed cookies
+        max_attempts: Maximum refresh attempts (default 10)
 
     Returns:
-        bool: True if refresh successful, False otherwise
+        bool: True if refresh successful, False if all attempts failed
     """
-    print("\n[AUTO-REFRESH] Cookies expired, refreshing...")
-    try:
-        cookies = refresh_cookies(headless=False)
-        if cookies and save_cookies(cookies):
-            client.load_cookies(cookies_path)
-            print("[AUTO-REFRESH] Cookies refreshed successfully")
-            return True
-        else:
-            print("[AUTO-REFRESH] Failed to refresh cookies")
-            return False
-    except Exception as e:
-        print(f"[AUTO-REFRESH] Error: {e}")
-        return False
+    import time
+
+    print(f"\n[AUTO-REFRESH] Starting cookie refresh (up to {max_attempts} attempts)...")
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"[AUTO-REFRESH] Attempt {attempt}/{max_attempts}...")
+
+        try:
+            cookies = refresh_cookies(headless=False)
+            if cookies and save_cookies(cookies):
+                client.load_cookies(cookies_path)
+                print(f"[AUTO-REFRESH] ✓ Success on attempt {attempt}! Cookies refreshed and loaded.")
+                return True
+            else:
+                print(f"[AUTO-REFRESH] ✗ Failed to extract/save cookies (attempt {attempt})")
+        except Exception as e:
+            print(f"[AUTO-REFRESH] ✗ Error on attempt {attempt}: {e}")
+
+        # Wait before retrying (except on last attempt)
+        if attempt < max_attempts:
+            wait_time = 2
+            print(f"[AUTO-REFRESH] Waiting {wait_time}s before retry...")
+            time.sleep(wait_time)
+
+    print(f"[AUTO-REFRESH] ✗ All {max_attempts} attempts failed - could not refresh cookies")
+    return False
 
 # ============================================================================
 # DATABASE HELPERS
