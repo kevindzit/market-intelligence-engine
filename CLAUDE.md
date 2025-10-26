@@ -51,7 +51,7 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
 
 ---
 
-## Current System (10 Active Scrapers)
+## Current System (15 Active Scrapers)
 
 ### Traditional Finance Data
 1. **News** - NewsAPI + RSS → ChromaDB
@@ -60,29 +60,56 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
 4. **Economic Data** - FRED API → PostgreSQL
 5. **Company Fundamentals** - FMP + yfinance → PostgreSQL
 
-### Crypto Twitter Intelligence (Production-Ready)
-6. **Twitter Sentiment** (crypto_scrapers/twitter_sentiment.py) - 510 lines
-   - Tracks: BTC, ETH, SOL, PEPE, DOGE
-   - VADER + 150+ crypto lexicon terms
-   - Yale engagement coefficient (0-1 normalized)
-   - Velocity tracking (sentiment + volume acceleration)
-   - Reply/quote count metadata
-   - Bot swarm detection
-   - 5-minute polling cycles
+### Crypto Twitter Intelligence Fleet (Production-Ready)
 
-7. **Twitter Whales** (crypto_scrapers/twitter_whales.py) - 572 lines
-   - Tracks: 38 whale accounts (7 slots available, MAX = 45)
-   - Categories: Alpha Callers (13), Insiders (2), On-Chain (8), TA (3), High-Profile (6), Platform (6)
-   - Same sentiment engine as general scraper
-   - 10-minute polling cycles
-   - Source tagging for whale vs general tweets
+**Shared Infrastructure:**
+- **[nice_funcs/twitter_funcs.py](nice_funcs/twitter_funcs.py)** - 498 lines
+  - VADER + 150+ crypto lexicon, Yale engagement coefficient
+  - Bot detection & pump pattern detection
+  - Twitter client initialization & cookie management
+  - All common functions imported by scrapers
 
-8. **Shared Twitter Functions** (nice_funcs/twitter_funcs.py) - 498 lines
-   - VADER + 150+ crypto lexicon
-   - Yale engagement coefficient
-   - Bot detection & pump pattern detection
-   - Twitter client initialization & cookie management
-   - All common functions imported by scrapers
+**Token-Based Scrapers (5-min cycles):**
+
+6. **Twitter Meme Coins** ([crypto_scrapers/twitter_memecoins.py](crypto_scrapers/twitter_memecoins.py)) - ~500 lines
+   - Tokens: PEPE, DOGE, SHIB, BONK, WIF
+   - Source ID: `general_search`
+
+7. **Twitter Large Caps** ([crypto_scrapers/twitter_largecaps.py](crypto_scrapers/twitter_largecaps.py)) - ~500 lines
+   - Tokens: BTC, ETH, SOL, BNB, XRP, ADA, TRX
+   - Source ID: `largecaps`
+
+8. **Twitter DeFi** ([crypto_scrapers/twitter_defi.py](crypto_scrapers/twitter_defi.py)) - ~500 lines
+   - Tokens: UNI, AAVE, LDO, MKR, CRV, GMX, SNX
+   - Source ID: `defi`
+
+9. **Twitter Layer 1s** ([crypto_scrapers/twitter_layer1s.py](crypto_scrapers/twitter_layer1s.py)) - ~500 lines
+   - Tokens: AVAX, DOT, NEAR, ATOM, ICP, ALGO, FTM
+   - Source ID: `layer1s`
+
+10. **Twitter Layer 2s** ([crypto_scrapers/twitter_layer2s.py](crypto_scrapers/twitter_layer2s.py)) - ~500 lines
+    - Tokens: ARB, OP, MATIC, METIS, IMX
+    - Source ID: `layer2s`
+
+11. **Twitter AI/ML** ([crypto_scrapers/twitter_ai.py](crypto_scrapers/twitter_ai.py)) - ~500 lines
+    - Tokens: RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR
+    - Source ID: `ai`
+
+**Account-Based Scrapers (10-min cycles):**
+
+12. **Twitter Whales** ([crypto_scrapers/twitter_whales.py](crypto_scrapers/twitter_whales.py)) - 572 lines
+    - Accounts: 38 whale accounts (7 slots available, MAX = 45)
+    - Categories: Alpha Callers (13), Insiders (2), On-Chain (8), TA (3), High-Profile (6), Platform (6)
+    - Source ID: `whale_tracker`
+
+**Common Features (All Twitter Scrapers):**
+- VADER + 150+ crypto lexicon terms
+- Yale engagement coefficient (0-1 normalized)
+- Velocity tracking (sentiment + volume acceleration)
+- Reply/quote count metadata
+- Bot swarm detection
+- MIN_FOLLOWERS = 5000 quality filter
+- Auto-refresh cookies (10 retry attempts)
 
 ### Infrastructure
 - **PostgreSQL** (Docker, port 54594) - All structured data
@@ -112,10 +139,15 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
 - **Pump Score** - Detects artificial pump schemes
 - **Influence Weight** - 0-1 normalized engagement coefficient
 
-### Current Deployment
-- **General Sentiment**: 5 tokens (PEPE, DOGE, SHIB, BONK, WIF) × 5-min cycles + BTC for market indicator
+### Current Deployment (41 Tokens Tracked)
+- **Meme Coins**: PEPE, DOGE, SHIB, BONK, WIF (5 tokens)
+- **Large Caps**: BTC, ETH, SOL, BNB, XRP, ADA, TRX (7 tokens)
+- **DeFi**: UNI, AAVE, LDO, MKR, CRV, GMX, SNX (7 tokens)
+- **Layer 1s**: AVAX, DOT, NEAR, ATOM, ICP, ALGO, FTM (7 tokens)
+- **Layer 2s**: ARB, OP, MATIC, METIS, IMX (5 tokens)
+- **AI/ML**: RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR (7 tokens)
 - **Whale Tracking**: 38 active accounts × 10-min cycles (7 slots available, MAX = 45)
-- **Rate Limits**: 50 calls/15min per endpoint (monitored in production)
+- **Rate Limits**: 50 calls/15min per endpoint - fleet designed to stay safely under limits
 
 ### Research Backing
 - **VADER > FinBERT** for crypto Twitter (multiple studies)
@@ -134,7 +166,7 @@ When creating ANY new Twitter scraper, follow this guide:
 ### Step 1: Review Reference Files
 
 **ALWAYS review these files first:**
-1. **[crypto_scrapers/twitter_sentiment.py](crypto_scrapers/twitter_sentiment.py)** - Reference implementation for token-based scraping (510 lines)
+1. **[crypto_scrapers/twitter_memecoins.py](crypto_scrapers/twitter_memecoins.py)** - Reference implementation for token-based scraping (~500 lines)
 2. **[crypto_scrapers/twitter_whales.py](crypto_scrapers/twitter_whales.py)** - Reference implementation for account-based scraping (572 lines)
 3. **[nice_funcs/twitter_funcs.py](nice_funcs/twitter_funcs.py)** - Shared functions you MUST import (498 lines)
 4. **[data/pjx_database_schema.sql](data/pjx_database_schema.sql)** - Database schema (all scrapers use `twitter_sentiment` table)
@@ -194,7 +226,7 @@ ON CONFLICT (tweet_id, token) DO NOTHING  -- Prevents duplicates across ALL scra
 - `get_user_by_screen_name`: **95 calls/15min**
 
 **Best practices:**
-- Keep token lists to 5-10 tokens max (twitter_sentiment.py tracks 5 tokens × 5min cycles = 30 searches per 15min)
+- Keep token lists to 5-7 tokens max (twitter_memecoins.py tracks 5 tokens × 5min cycles = ~30 searches per 15min)
 - Whale tracker: 38 accounts × 10min cycles = safe under 50 limit (7 slots available for new whales)
 - Add `time.sleep(randint(1, 3))` between API calls
 - Use `TooManyRequests` exception handling with `e.rate_limit_reset`
@@ -203,7 +235,7 @@ ON CONFLICT (tweet_id, token) DO NOTHING  -- Prevents duplicates across ALL scra
 
 **Choose your base template:**
 
-**Option A: Token-Based Scraper** (like twitter_sentiment.py)
+**Option A: Token-Based Scraper** (like twitter_memecoins.py)
 ```python
 TOKENS_TO_TRACK = ["TOKEN1", "TOKEN2", "TOKEN3"]  # 5-10 max
 POLLING_INTERVAL = 5 * 60  # 5 minutes
@@ -376,17 +408,26 @@ python orchestrator.py
 
 ## Project Status & Goals
 
-### Current Work
-**Scaling Twitter Intelligence Across Crypto Market**
-- Production-ready scrapers: twitter_sentiment.py (general) + twitter_whales.py (38 accounts)
-- Now duplicating these working systems for different crypto sectors
-- Each duplicate: 5-10 tokens, same proven strategy (VADER + Yale + velocity)
-- All data → single twitter_sentiment table for unified analysis
+### Current Work ✅ COMPLETE
+**Twitter Intelligence Fleet - Production Ready**
+- Built 6 token-based scrapers covering 41 tokens across all major crypto sectors
+- Built 1 whale tracker covering 38 high-signal accounts
+- All using proven strategy: VADER + Yale + velocity + MIN_FOLLOWERS = 5000 filter
+- All data → single twitter_sentiment table for unified AI analysis
+- Total coverage: Meme coins, Large caps, DeFi, Layer 1s, Layer 2s, AI/ML + Whales
+
+### Next Phase
+**Testing & AI Integration**
+1. Test scraper fleet for 24-48 hours
+2. Monitor rate limits, data quality, and cookie refresh stability
+3. Build AI decision layer using Claude Sonnet 4
+4. Validate trading signals with paper trading
+5. Only enable live execution after proven profitability
 
 ### Project Goals
-1. **Learn by doing** - Build real systems with real data
-2. **Portfolio project** - Production-quality code and architecture
-3. **Real-world skills** - APIs, databases, scrapers, AI integration
+1. **Learn by doing** - Build real systems with real data ✅
+2. **Portfolio project** - Production-quality code and architecture ✅
+3. **Real-world skills** - APIs, databases, scrapers, AI integration (in progress)
 4. **Future profitability** - Target $500/month once AI decision layer is validated
 
 **Philosophy**: Keep it simple. Build step-by-step. Test everything. No premature optimization.

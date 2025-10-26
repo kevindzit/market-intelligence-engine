@@ -1,6 +1,7 @@
 """
-Twitter Sentiment Scraper
-Tracks crypto sentiment with volume tracking and bot filtering
+Twitter Large Cap Scraper
+Tracks top crypto by market cap - market-moving assets
+Focus: BTC, ETH, SOL, BNB, XRP, ADA, TRX
 """
 
 import os
@@ -35,19 +36,18 @@ setup_httpx_patching()
 
 from twikit import TooManyRequests
 
-# Optimized token list - focus on TOP meme coins with proven Twitter sensitivity
+# LARGE CAP TOKENS - Top 7 by market cap (market movers)
 TOKENS_TO_TRACK = [
-    "PEPE",   # Massive Twitter community, high liquidity
-    "DOGE",   # Elon tweets move it instantly
-    "SHIB",   # Large community, responds to sentiment
-    "BONK",   # Active Solana community
-    "WIF"     # Newer, high volatility, Twitter-sensitive
+    "BTC",      # Bitcoin - $108K, 1.65M tweets/week, market leader
+    "ETH",      # Ethereum - Top 2, 426K tweets/week, DeFi base
+    "SOL",      # Solana - Top 5, 242K tweets/week, fast growth
+    "BNB",      # Binance - 638K tweets/week, exchange dominance
+    "XRP",      # Ripple - 141K tweets/week, institutional adoption
+    "ADA",      # Cardano - $0.735, 120K tweets/week
+    "TRX"       # Tron - $80.7B USDT hosted
 ]
 
-# Use BTC only as market indicator, not trade target
-MARKET_INDICATORS = ["BITCOIN"]
-
-TWEETS_PER_TOKEN = 30  # 5 tokens × 30 tweets = ~30 searches (60% rate limit usage)
+TWEETS_PER_TOKEN = 30  # 7 tokens × 30 tweets = ~42 searches (84% rate limit usage)
 POLLING_INTERVAL = 5 * 60  # 5 minutes (optimal for signal freshness)
 MIN_FOLLOWERS = 5000  # Quality filter to reduce bot/spam noise
 
@@ -58,18 +58,18 @@ DB_NAME = os.getenv('DB_NAME', 'postgres')
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 
-class TwitterSentiment:
+class TwitterLargecaps:
     def __init__(self):
         self.client = None
         self.vader = None
         self.db_conn = None
         self.volume_baseline = defaultdict(lambda: {'count': 20.0, 'history': []})
         self.last_poll_time = defaultdict(lambda: datetime.now() - timedelta(hours=1))
-        self.health = HealthMonitor('twitter_sentiment', alert_threshold=5)  # 5 empty cycles before alert (adjusted for MIN_FOLLOWERS filter)
+        self.health = HealthMonitor('twitter_largecaps', alert_threshold=5)
 
         # Velocity tracking - stores last 3 cycles per token
-        self.sentiment_history = defaultdict(list)  # {token: [{'time': ..., 'sentiment': ..., 'volume_spike': ...}]}
-        self.cycle_interval = POLLING_INTERVAL / 60.0  # Convert to minutes for velocity calc
+        self.sentiment_history = defaultdict(list)
+        self.cycle_interval = POLLING_INTERVAL / 60.0
 
     def init_db(self):
         self.db_conn = get_db_connection(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
@@ -93,10 +93,8 @@ class TwitterSentiment:
             """)
 
             for token, avg_volume in cursor.fetchall():
-                # Convert Decimal to float to avoid type errors
                 self.volume_baseline[token]['count'] = float(avg_volume) if avg_volume else 20.0
         except:
-            # Table might not have volume data yet
             pass
         finally:
             cursor.close()
@@ -112,7 +110,7 @@ class TwitterSentiment:
         spike_ratio = current / (baseline + 1.0)
 
         # Update baseline with exponential moving average
-        alpha = 0.1  # Smoothing factor
+        alpha = 0.1
         self.volume_baseline[token]['count'] = (
             alpha * current + (1.0 - alpha) * baseline
         )
@@ -123,21 +121,17 @@ class TwitterSentiment:
         """Calculate sentiment velocity and volume acceleration"""
         history = self.sentiment_history[token]
 
-        # Need at least one previous cycle to calculate velocity
         if not history:
             return None
 
         prev_cycle = history[-1]
-        time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0  # Minutes
+        time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0
 
-        if time_delta < 1:  # Avoid division by very small numbers
+        if time_delta < 1:
             return None
 
-        # Calculate rates of change per minute
         sentiment_velocity = (current_sentiment - prev_cycle['sentiment']) / time_delta
         volume_acceleration = (current_volume_spike - prev_cycle['volume_spike']) / time_delta
-
-        # Momentum score: both metrics moving up together
         momentum = sentiment_velocity * volume_acceleration
 
         return {
@@ -157,7 +151,6 @@ class TwitterSentiment:
             'volume_spike': volume_spike
         })
 
-        # Keep only last 3 cycles
         if len(self.sentiment_history[token]) > 3:
             self.sentiment_history[token] = self.sentiment_history[token][-3:]
 
@@ -170,9 +163,9 @@ class TwitterSentiment:
         collected = []
 
         try:
-            search_term = f"${token}" if token.upper() in TOKENS_TO_TRACK else token
+            search_term = f"${token}"
             print(f"\nSearching: {search_term}")
-            time.sleep(randint(1, 3))  # Reduced delay for 5-min cycles
+            time.sleep(randint(1, 3))
 
             tweets = await self.client.search_tweet(search_term, product='Latest')
 
@@ -188,14 +181,14 @@ class TwitterSentiment:
 
                     user = tweet.user if hasattr(tweet, 'user') and tweet.user else None
 
-                    # Quality filter - skip low-follower accounts (reduces 56% of bot noise)
+                    # Quality filter
                     followers = getattr(user, 'followers_count', 0) if user else 0
                     if followers < MIN_FOLLOWERS:
                         continue
 
                     tweet_data = {
                         'tweet_id': tweet.id,
-                        'token': token.upper(),  # Always uppercase for consistency
+                        'token': token.upper(),
                         'text': tweet.text,
                         'username': getattr(user, 'screen_name', 'unknown') if user else 'unknown',
                         'followers': followers,
@@ -209,7 +202,6 @@ class TwitterSentiment:
                         'quotes': getattr(tweet, 'quote_count', 0) or 0,
                         'created_at': getattr(tweet, 'created_at', datetime.now()),
                         'timestamp': datetime.now(),
-                        # Extract metadata for AI analysis
                         'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
                         'hashtag_count': tweet.text.count('#')
                     }
@@ -219,17 +211,14 @@ class TwitterSentiment:
             print(f"[OK] Collected {len(collected)} quality tweets for {token}")
 
         except TooManyRequests as e:
-            # Handle rate limiting
             reset_time = datetime.fromtimestamp(e.rate_limit_reset)
             wait_seconds = (reset_time - datetime.now()).total_seconds() + randint(5, 10)
             print(f"Rate limited. Waiting {int(wait_seconds)}s...")
             time.sleep(wait_seconds)
         except Exception as e:
             error_msg = str(e).lower()
-            # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
             if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                 print(f"[WARN] Authentication error detected: {e}")
-                # auto_refresh_cookies now retries up to 10 times internally
                 if auto_refresh_cookies(self.client):
                     print(f"[RETRY] Cookies refreshed successfully, retrying search for {token}...")
                     return await self.get_tweets_for_token(token)
@@ -247,7 +236,6 @@ class TwitterSentiment:
 
         cursor = self.db_conn.cursor()
 
-        # Group tweets by token for volume analysis
         by_token = defaultdict(list)
         for tweet in all_tweets:
             by_token[tweet['token']].append(tweet)
@@ -256,17 +244,14 @@ class TwitterSentiment:
         volume_alerts = []
 
         for token, tweets in by_token.items():
-            # Calculate volume spike (PRIMARY SIGNAL)
             volume_spike = self.calculate_volume_spike(token, len(tweets))
 
-            if volume_spike >= 2.0:  # 2x baseline = strong signal
+            if volume_spike >= 2.0:
                 volume_alerts.append((token, volume_spike, len(tweets)))
 
-            # Calculate average sentiment for velocity tracking
             sentiments = [analyze_sentiment(self.vader, t['text']) for t in tweets]
             avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
 
-            # Calculate velocity metrics
             velocity_metrics = self.calculate_velocity_metrics(token, avg_sentiment, volume_spike)
             if velocity_metrics:
                 sentiment_velocity = velocity_metrics['sentiment_velocity']
@@ -277,17 +262,13 @@ class TwitterSentiment:
                 volume_acceleration = None
                 momentum_score = None
 
-            # Update history for next cycle
             self.update_sentiment_history(token, avg_sentiment, volume_spike)
 
-            # Detect pump patterns
             pump_score = detect_pump_pattern(tweets, SPAM_KEYWORDS)
 
             for tweet in tweets:
-                # Analyze sentiment
                 sentiment = analyze_sentiment(self.vader, tweet['text'])
 
-                # Calculate influence-weighted score
                 user_data = {
                     'followers': tweet['followers'],
                     'following': tweet['following'],
@@ -300,10 +281,8 @@ class TwitterSentiment:
                 influence_weight = calculate_influence_weight(user_data, engagement_data)
                 weighted_sentiment = sentiment * influence_weight
 
-                # Bot probability
                 bot_prob = calculate_bot_probability(user_data)
 
-                # Determine alert level
                 if weighted_sentiment > 500 or (tweet['followers'] > 10_000_000 and abs(sentiment) > 0.5):
                     alert_level = "EXTREME"
                 elif weighted_sentiment > 100 or (tweet['followers'] > 1_000_000 and abs(sentiment) > 0.6):
@@ -347,7 +326,7 @@ class TwitterSentiment:
                         round(volume_spike, 2),
                         round(bot_prob, 3),
                         round(pump_score, 3) if pump_score > 0.5 else None,
-                        'general_search',  # Source identifier for general meme coin searches
+                        'largecaps',  # Source identifier for large cap tokens
                         tweet.get('verified', False),
                         tweet.get('has_urls', False),
                         tweet.get('hashtag_count', 0),
@@ -369,7 +348,6 @@ class TwitterSentiment:
 
         print(f"[OK] Saved {saved} new tweets")
 
-        # VOLUME ALERTS (Primary trading signal!)
         if volume_alerts:
             print("\n" + "="*70)
             print("🚨 VOLUME SPIKE ALERTS (PRIMARY TRADING SIGNAL) 🚨")
@@ -387,24 +365,16 @@ class TwitterSentiment:
 
         all_tweets = []
 
-        # Collect main tokens (meme coins with high Twitter sensitivity)
         for token in TOKENS_TO_TRACK:
             tweets = await self.get_tweets_for_token(token)
             all_tweets.extend(tweets)
 
-        # Collect market indicators (BTC/ETH) with fewer tweets
-        for token in MARKET_INDICATORS[:1]:  # Just BTC for market sentiment
-            tweets = await self.get_tweets_for_token(token)
-            all_tweets.extend(tweets[:5])  # Only 5 tweets for indicators
-
-        # Save tweets and track health
         saved = 0
         if all_tweets:
             saved = self.save_to_db(all_tweets)
 
         self.health.record_cycle(saved)
 
-        # Show cycle summary from collected tweets
         momentum_alerts = []
         if all_tweets:
             by_token = defaultdict(list)
@@ -418,10 +388,9 @@ class TwitterSentiment:
             for token in sorted(by_token.keys(), key=lambda t: len(by_token[t]), reverse=True):
                 tweets = by_token[token]
                 count = len(tweets)
-                human_count = sum(1 for t in tweets if t.get('followers', 0) >= 10)  # Basic human filter
+                human_count = sum(1 for t in tweets if t.get('followers', 0) >= 10)
                 human_pct = (human_count / count * 100) if count > 0 else 0
 
-                # Calculate average sentiment from the actual tweets
                 sentiments = []
                 for tweet in tweets:
                     sent = analyze_sentiment(self.vader, tweet['text'])
@@ -430,15 +399,13 @@ class TwitterSentiment:
 
                 print(f"{token:<10} | {count:<8} | {human_pct:>8.0f}% | {avg_sent:>9.3f}")
 
-                # Calculate volume spike for velocity tracking
                 baseline = float(self.volume_baseline[token]['count'] or 20.0)
                 volume_spike = float(count) / (baseline + 1.0)
 
                 velocity = self.calculate_velocity_metrics(token, avg_sent, volume_spike)
 
                 if velocity:
-                    # Check for significant momentum
-                    if velocity['sentiment_velocity'] > 0.06 and velocity['volume_acceleration'] > 0.2:  # Per minute thresholds
+                    if velocity['sentiment_velocity'] > 0.06 and velocity['volume_acceleration'] > 0.2:
                         momentum_alerts.append({
                             'token': token,
                             'velocity': velocity,
@@ -446,13 +413,11 @@ class TwitterSentiment:
                             'current_volume_spike': volume_spike
                         })
 
-                # Update history for next cycle
                 self.update_sentiment_history(token, avg_sent, volume_spike)
 
         else:
             print("\nNo tweets collected this cycle.")
 
-        # Print momentum alerts
         if momentum_alerts:
             print("\n" + "="*70)
             print("🚀 MOMENTUM ALERTS (RAPID SENTIMENT CHANGE DETECTED)")
@@ -464,7 +429,6 @@ class TwitterSentiment:
                 print(f"  Volume acceleration: {v['volume_acceleration']:+.2f}/min ({v['prev_volume_spike']:.1f}x → {alert['current_volume_spike']:.1f}x)")
                 print(f"  Momentum score: {v['momentum']:.3f}")
 
-                # Classify signal strength
                 if v['momentum'] > 0.05:
                     print(f"  Signal: 🔥 STRONG BUY - Rapid improvement detected!")
                 elif v['momentum'] > 0.02:
@@ -473,15 +437,14 @@ class TwitterSentiment:
                     print(f"  Signal: 📈 WATCH - Positive momentum building")
             print("="*70)
 
-        # Health status
         self.health.print_health_summary()
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Cycle completed")
 
     async def run(self):
         """Main loop - runs every 5 minutes"""
         print("\n" + "="*60)
-        print("Twitter Sentiment Scraper")
-        print("Volume Tracking + Bot Filtering")
+        print("Twitter Large Cap Scraper")
+        print("Tracking: BTC, ETH, SOL, BNB, XRP, ADA, TRX")
         print("="*60)
 
         self.init_db()
@@ -500,10 +463,10 @@ class TwitterSentiment:
                 break
             except Exception as e:
                 print(f"[ERROR] Cycle failed: {e}")
-                await asyncio.sleep(60)  # Wait 1 min on error
+                await asyncio.sleep(60)
 
 async def main():
-    scraper = TwitterSentiment()
+    scraper = TwitterLargecaps()
     await scraper.run()
 
 if __name__ == "__main__":

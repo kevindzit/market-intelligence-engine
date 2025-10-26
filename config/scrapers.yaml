@@ -72,10 +72,50 @@ scrapers:
     interval: "daily"
 
   # ==================== CRYPTO SCRAPERS ====================
-  - name: Twitter Sentiment Analyzer
-    script: crypto_scrapers/twitter_sentiment.py
+  - name: Twitter Meme Coins
+    script: crypto_scrapers/twitter_memecoins.py
     category: crypto
-    description: Scrapes Twitter for crypto sentiment (PEPE, DOGE, SHIB, BONK, WIF)
+    description: Meme coin sentiment (PEPE, DOGE, SHIB, BONK, WIF)
+    enabled: false  # Set to true after running twitter_login.py
+    free_tier: "Free (twikit - no API cost)"
+    interval: "5 minutes"
+
+  - name: Twitter Large Caps
+    script: crypto_scrapers/twitter_largecaps.py
+    category: crypto
+    description: Top 7 by market cap (BTC, ETH, SOL, BNB, XRP, ADA, TRX)
+    enabled: false  # Set to true after running twitter_login.py
+    free_tier: "Free (twikit - no API cost)"
+    interval: "5 minutes"
+
+  - name: Twitter DeFi
+    script: crypto_scrapers/twitter_defi.py
+    category: crypto
+    description: DeFi protocols (UNI, AAVE, LDO, MKR, CRV, GMX, SNX)
+    enabled: false  # Set to true after running twitter_login.py
+    free_tier: "Free (twikit - no API cost)"
+    interval: "5 minutes"
+
+  - name: Twitter Layer 1s
+    script: crypto_scrapers/twitter_layer1s.py
+    category: crypto
+    description: Alt L1 blockchains (AVAX, DOT, NEAR, ATOM, ICP, ALGO, FTM)
+    enabled: false  # Set to true after running twitter_login.py
+    free_tier: "Free (twikit - no API cost)"
+    interval: "5 minutes"
+
+  - name: Twitter Layer 2s
+    script: crypto_scrapers/twitter_layer2s.py
+    category: crypto
+    description: Ethereum L2s (ARB, OP, MATIC, METIS, IMX)
+    enabled: false  # Set to true after running twitter_login.py
+    free_tier: "Free (twikit - no API cost)"
+    interval: "5 minutes"
+
+  - name: Twitter AI/ML
+    script: crypto_scrapers/twitter_ai.py
+    category: crypto
+    description: AI/ML tokens (RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR)
     enabled: false  # Set to true after running twitter_login.py
     free_tier: "Free (twikit - no API cost)"
     interval: "5 minutes"
@@ -83,7 +123,7 @@ scrapers:
   - name: Twitter Whale Tracker
     script: crypto_scrapers/twitter_whales.py
     category: crypto
-    description: Monitors 45 high-signal whale accounts (alpha callers, on-chain analysts, insiders)
+    description: Monitors 38 high-signal whale accounts (alpha callers, on-chain analysts, insiders)
     enabled: false  # Set to true after running twitter_login.py
     free_tier: "Free (twikit - no API cost)"
     interval: "10 minutes"
