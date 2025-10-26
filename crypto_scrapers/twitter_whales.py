@@ -102,6 +102,10 @@ class WhaleTracker:
         self.health = HealthMonitor('twitter_whales', alert_threshold=10)
         self.cookies_refreshed = False  # Track if we already tried refreshing this cycle
 
+        # Velocity tracking - stores last 3 cycles per token
+        self.sentiment_history = defaultdict(list)  # {token: [{'time': ..., 'sentiment': ..., 'tweet_count': ...}]}
+        self.cycle_interval = POLLING_INTERVAL / 60.0  # Convert to minutes for velocity calc
+
     def init_db(self):
         try:
             self.db_conn = psycopg2.connect(
@@ -242,6 +246,48 @@ class WhaleTracker:
             signal *= 0.8  # Too many tokens = less focused
 
         return signal
+
+    def calculate_velocity_metrics(self, token, current_sentiment, current_tweet_count):
+        """Calculate sentiment velocity for whale tweets"""
+        history = self.sentiment_history[token]
+
+        # Need at least one previous cycle to calculate velocity
+        if not history:
+            return None
+
+        prev_cycle = history[-1]
+        time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0  # Minutes
+
+        if time_delta < 1:  # Avoid division by very small numbers
+            return None
+
+        # Calculate rates of change per minute
+        sentiment_velocity = (current_sentiment - prev_cycle['sentiment']) / time_delta
+        volume_change = (current_tweet_count - prev_cycle['tweet_count']) / time_delta
+
+        # Momentum score: both metrics moving up together
+        momentum = sentiment_velocity * volume_change
+
+        return {
+            'sentiment_velocity': sentiment_velocity,
+            'volume_change': volume_change,
+            'momentum': momentum,
+            'prev_sentiment': prev_cycle['sentiment'],
+            'prev_tweet_count': prev_cycle['tweet_count'],
+            'time_delta': time_delta
+        }
+
+    def update_sentiment_history(self, token, sentiment, tweet_count):
+        """Store current cycle data and trim to last 3 cycles"""
+        self.sentiment_history[token].append({
+            'time': datetime.now(),
+            'sentiment': sentiment,
+            'tweet_count': tweet_count
+        })
+
+        # Keep only last 3 cycles
+        if len(self.sentiment_history[token]) > 3:
+            self.sentiment_history[token] = self.sentiment_history[token][-3:]
 
     async def get_whale_tweets(self, username):
         """Get recent tweets from a specific whale account"""
@@ -428,6 +474,67 @@ class WhaleTracker:
             saved = self.save_to_db(all_tweets)
 
         self.health.record_cycle(saved)
+
+        # Calculate velocity metrics per token
+        momentum_alerts = []
+        if all_tweets and self.vader:
+            # Group tweets by token to analyze sentiment velocity
+            by_token = defaultdict(list)
+            for tweet in all_tweets:
+                for token in tweet.get('mentioned_tokens', ['GENERAL']):
+                    by_token[token].append(tweet)
+
+            for token, tweets in by_token.items():
+                if token == 'GENERAL':  # Skip general tweets without specific tokens
+                    continue
+
+                # Calculate average whale sentiment for this token
+                sentiments = []
+                for tweet in tweets:
+                    sentiment = self.vader.polarity_scores(tweet['text'])['compound']
+                    sentiments.append(sentiment)
+
+                avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
+                tweet_count = len(tweets)
+
+                # Calculate velocity
+                velocity = self.calculate_velocity_metrics(token, avg_sentiment, tweet_count)
+
+                if velocity:
+                    # Check for significant whale momentum (lower threshold since whales are high-signal)
+                    if velocity['sentiment_velocity'] > 0.03 and velocity['volume_change'] > 0.1:  # Per minute
+                        momentum_alerts.append({
+                            'token': token,
+                            'velocity': velocity,
+                            'current_sentiment': avg_sentiment,
+                            'current_tweet_count': tweet_count,
+                            'whale_count': len(set(t['username'] for t in tweets))
+                        })
+
+                # Update history
+                self.update_sentiment_history(token, avg_sentiment, tweet_count)
+
+        # Print momentum alerts (whale signals are especially important!)
+        if momentum_alerts:
+            print("\n" + "="*70)
+            print("🐋 WHALE MOMENTUM ALERTS (HIGH-SIGNAL ACCOUNTS ACCELERATING)")
+            print("="*70)
+            for alert in sorted(momentum_alerts, key=lambda x: x['velocity']['momentum'], reverse=True):
+                v = alert['velocity']
+                print(f"\n{alert['token']}:")
+                print(f"  Whale count: {alert['whale_count']}")
+                print(f"  Sentiment velocity: {v['sentiment_velocity']:+.3f}/min ({v['prev_sentiment']:.2f} → {alert['current_sentiment']:.2f})")
+                print(f"  Volume change: {v['volume_change']:+.1f} tweets/min ({int(v['prev_tweet_count'])} → {alert['current_tweet_count']})")
+                print(f"  Momentum score: {v['momentum']:.3f}")
+
+                # Classify signal strength (whales get stronger signals)
+                if v['momentum'] > 0.03:
+                    print(f"  Signal: 🔥🐋 WHALE STRONG BUY - Multiple whales accelerating!")
+                elif v['momentum'] > 0.01:
+                    print(f"  Signal: ⚡🐋 WHALE BUY - Whale sentiment building")
+                else:
+                    print(f"  Signal: 📈🐋 WHALE WATCH - Positive whale momentum")
+            print("="*70)
 
         # Show summary
         cursor = self.db_conn.cursor()

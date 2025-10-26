@@ -95,6 +95,10 @@ class TwitterSentiment:
         self.health = HealthMonitor('twitter_sentiment', alert_threshold=3)
         self.cookies_refreshed = False  # Track if we already tried refreshing this cycle
 
+        # Velocity tracking - stores last 3 cycles per token
+        self.sentiment_history = defaultdict(list)  # {token: [{'time': ..., 'sentiment': ..., 'volume_spike': ...}]}
+        self.cycle_interval = POLLING_INTERVAL / 60.0  # Convert to minutes for velocity calc
+
     def init_db(self):
         try:
             self.db_conn = psycopg2.connect(
@@ -260,6 +264,48 @@ class TwitterSentiment:
         )
 
         return spike_ratio
+
+    def calculate_velocity_metrics(self, token, current_sentiment, current_volume_spike):
+        """Calculate sentiment velocity and volume acceleration"""
+        history = self.sentiment_history[token]
+
+        # Need at least one previous cycle to calculate velocity
+        if not history:
+            return None
+
+        prev_cycle = history[-1]
+        time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0  # Minutes
+
+        if time_delta < 1:  # Avoid division by very small numbers
+            return None
+
+        # Calculate rates of change per minute
+        sentiment_velocity = (current_sentiment - prev_cycle['sentiment']) / time_delta
+        volume_acceleration = (current_volume_spike - prev_cycle['volume_spike']) / time_delta
+
+        # Momentum score: both metrics moving up together
+        momentum = sentiment_velocity * volume_acceleration
+
+        return {
+            'sentiment_velocity': sentiment_velocity,
+            'volume_acceleration': volume_acceleration,
+            'momentum': momentum,
+            'prev_sentiment': prev_cycle['sentiment'],
+            'prev_volume_spike': prev_cycle['volume_spike'],
+            'time_delta': time_delta
+        }
+
+    def update_sentiment_history(self, token, sentiment, volume_spike):
+        """Store current cycle data and trim to last 3 cycles"""
+        self.sentiment_history[token].append({
+            'time': datetime.now(),
+            'sentiment': sentiment,
+            'volume_spike': volume_spike
+        })
+
+        # Keep only last 3 cycles
+        if len(self.sentiment_history[token]) > 3:
+            self.sentiment_history[token] = self.sentiment_history[token][-3:]
 
     def auto_refresh_cookies(self):
         """Automatically refresh cookies when they expire"""
@@ -507,6 +553,7 @@ class TwitterSentiment:
         self.health.record_cycle(saved)
 
         # Show cycle summary from collected tweets
+        momentum_alerts = []
         if all_tweets:
             by_token = defaultdict(list)
             for tweet in all_tweets:
@@ -530,8 +577,49 @@ class TwitterSentiment:
                 avg_sent = sum(sentiments) / len(sentiments) if sentiments else 0
 
                 print(f"{token:<10} | {count:<8} | {human_pct:>8.0f}% | {avg_sent:>9.3f}")
+
+                # Calculate volume spike for velocity tracking
+                baseline = float(self.volume_baseline[token]['count'] or 20.0)
+                volume_spike = float(count) / (baseline + 1.0)
+
+                velocity = self.calculate_velocity_metrics(token, avg_sent, volume_spike)
+
+                if velocity:
+                    # Check for significant momentum
+                    if velocity['sentiment_velocity'] > 0.06 and velocity['volume_acceleration'] > 0.2:  # Per minute thresholds
+                        momentum_alerts.append({
+                            'token': token,
+                            'velocity': velocity,
+                            'current_sentiment': avg_sent,
+                            'current_volume_spike': volume_spike
+                        })
+
+                # Update history for next cycle
+                self.update_sentiment_history(token, avg_sent, volume_spike)
+
         else:
             print("\nNo tweets collected this cycle.")
+
+        # Print momentum alerts
+        if momentum_alerts:
+            print("\n" + "="*70)
+            print("🚀 MOMENTUM ALERTS (RAPID SENTIMENT CHANGE DETECTED)")
+            print("="*70)
+            for alert in sorted(momentum_alerts, key=lambda x: x['velocity']['momentum'], reverse=True):
+                v = alert['velocity']
+                print(f"\n{alert['token']}:")
+                print(f"  Sentiment velocity: {v['sentiment_velocity']:+.3f}/min ({v['prev_sentiment']:.2f} → {alert['current_sentiment']:.2f})")
+                print(f"  Volume acceleration: {v['volume_acceleration']:+.2f}/min ({v['prev_volume_spike']:.1f}x → {alert['current_volume_spike']:.1f}x)")
+                print(f"  Momentum score: {v['momentum']:.3f}")
+
+                # Classify signal strength
+                if v['momentum'] > 0.05:
+                    print(f"  Signal: 🔥 STRONG BUY - Rapid improvement detected!")
+                elif v['momentum'] > 0.02:
+                    print(f"  Signal: ⚡ MODERATE BUY - Sentiment accelerating")
+                else:
+                    print(f"  Signal: 📈 WATCH - Positive momentum building")
+            print("="*70)
 
         # Health status
         self.health.print_health_summary()

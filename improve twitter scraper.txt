@@ -6,7 +6,4 @@ Missing quote tweets with high engagement
 
 notes for today
 
-fix 5-minute summary not showing anything from @twitter_sentiment.py
-build auto cookie fetcher
 go through new twitter scrapers and check them one by one and improve both the best we can
-fix so ctrl c works maybe
