@@ -7,53 +7,35 @@ import os
 import sys
 import asyncio
 import time
-import json
-import psycopg2
 from datetime import datetime, timedelta
 from pathlib import Path
 from random import randint
 from dotenv import load_dotenv
-import httpx
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import numpy as np
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
 from monitors.health_monitor import HealthMonitor
-from monitors.refresh_cookies import refresh_cookies, save_cookies
+from nice_funcs.twitter_funcs import (
+    setup_httpx_patching,
+    init_vader_with_crypto_lexicon,
+    init_twitter_client,
+    auto_refresh_cookies,
+    get_db_connection,
+    calculate_bot_probability,
+    calculate_influence_weight,
+    detect_pump_pattern,
+    analyze_sentiment,
+    SPAM_KEYWORDS
+)
 
-# Patch httpx for twikit
-original_client = httpx.Client
+# Setup httpx patching before importing twikit
+setup_httpx_patching()
 
-def patched_client(*args, **kwargs):
-    if 'headers' not in kwargs:
-        kwargs['headers'] = {}
-
-    user_agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    ]
-
-    kwargs['headers'].update({
-        'User-Agent': user_agents[randint(0, len(user_agents)-1)],
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-    })
-
-    kwargs.pop('proxy', None)
-    return original_client(*args, **kwargs)
-
-httpx.Client = patched_client
-
-from twikit import Client, TooManyRequests
+from twikit import TooManyRequests
 
 # Optimized token list - focus on TOP meme coins with proven Twitter sensitivity
-# Fewer tokens = deeper coverage = better whale detection (95%+ vs 40%)
 TOKENS_TO_TRACK = [
     "PEPE",   # Massive Twitter community, high liquidity
     "DOGE",   # Elon tweets move it instantly
@@ -63,20 +45,11 @@ TOKENS_TO_TRACK = [
 ]
 
 # Use BTC only as market indicator, not trade target
-MARKET_INDICATORS = ["BITCOIN"]  # Uppercase for consistency
+MARKET_INDICATORS = ["BITCOIN"]
 
 TWEETS_PER_TOKEN = 30  # 5 tokens × 30 tweets = ~30 searches (60% rate limit usage)
 POLLING_INTERVAL = 5 * 60  # 5 minutes (optimal for signal freshness)
-
-# Enhanced spam/bot filtering
-SPAM_KEYWORDS = [
-    'discord', 'telegram', 'airdrop', 'giveaway', 'free tokens',
-    'DM me', 'click here', 'join now', '100x guaranteed',
-    'presale', 'whitelist', 'mint now'
-]
-
-# Bot pattern detection
-BOT_USERNAME_PATTERN = r'^[a-zA-Z]{7,8}\d{8}$'  # Common bot pattern
+MIN_FOLLOWERS = 5000  # Quality filter to reduce bot/spam noise
 
 # Database config
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -100,19 +73,8 @@ class TwitterSentiment:
         self.cycle_interval = POLLING_INTERVAL / 60.0  # Convert to minutes for velocity calc
 
     def init_db(self):
-        try:
-            self.db_conn = psycopg2.connect(
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
-            )
-            print("[OK] Database connected")
-            self.load_volume_baseline()
-        except Exception as e:
-            print(f"[ERROR] Database connection failed: {e}")
-            sys.exit(1)
+        self.db_conn = get_db_connection(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
+        self.load_volume_baseline()
 
     def load_volume_baseline(self):
         """Load historical volume data for baseline calculations"""
@@ -141,235 +103,8 @@ class TwitterSentiment:
             cursor.close()
 
     def init_vader(self):
-        """Initialize VADER with comprehensive crypto-specific lexicon (150+ terms)
-
-        Based on research:
-        - GitHub PR #81 (community-validated crypto terms)
-        - Academic research (800-word crypto market lexicon)
-        - 2025 Crypto Twitter slang & meme coin culture
-        - Technical analysis & trading terminology
-        """
-        self.vader = SentimentIntensityAnalyzer()
-
-        # Comprehensive crypto lexicon with sentiment scores (-4 to +4 scale)
-        crypto_lexicon = {
-            # VERY BULLISH (2.5 to 4.0) - Strong positive signals
-            'moonshot': 3.0, '100x': 3.2, '10x': 2.8, 'gem': 3.0,
-            'alpha': 2.8, 'early': 2.6, 'stealth launch': 2.9,
-            'all time high': 2.3, 'ath': 2.3, 'bull run': 2.5,
-
-            # BULLISH (1.0 to 2.5) - Positive sentiment
-            'bullish': 2.3, 'bull': 1.8, 'bulls': 1.9, 'bull market': 2.3,
-            'moon': 2.0, 'mooning': 2.2, 'to the moon': 2.5,
-            'lambo': 1.8, 'rocket': 2.0, 'pump': 1.4, 'pumping': 1.6,
-            'diamond hands': 2.1, 'hodl': 1.0, 'hold': 1.0,
-            'long': 1.3, 'accumulate': 1.7, 'buy the dip': 1.8,
-            'btd': 1.8, 'breakout': 2.0, 'bounce': 1.1,
-            'support': 1.0, 'reversal': 1.2, 'recovery': 1.4,
-            'lfg': 2.0, 'wagmi': 2.1, 'send it': 2.3,
-            'send': 1.9, 'degen': 1.5, 'ape': 1.6, 'aping': 1.7,
-            'based': 1.8, 'giga': 2.2, 'chad': 1.9,
-            'strategy': 1.5, 'arbitrage': 0.4,
-
-            # MODERATELY POSITIVE (0.1 to 1.0)
-            'green': 0.8, 'profit': 0.9, 'gains': 0.9,
-            'uptrend': 0.8, 'trending': 0.6, 'momentum': 0.7,
-            'volume spike': 0.8, 'buying pressure': 0.7,
-            'accumulation': 0.6, 'entry': 0.5, 'loaded': 0.9,
-            'bag': 0.3, 'position': 0.2, 'conviction': 0.6,
-
-            # NEUTRAL/CONTEXT (0.0) - Depends on context
-            'gm': 0.0, 'gn': 0.0, 'ser': 0.0, 'anon': 0.0,
-            'fren': 0.0, 'whale': 0.0, 'whales': -1.1,
-            'sec': 0.0, 'regulation': -1.2, 'regulations': -1.2,
-            'ico': -0.4, 'presale': -0.5,
-
-            # MODERATELY NEGATIVE (-1.0 to -0.1)
-            'resistance': -0.3, 'overbought': -0.5, 'overvalued': -0.6,
-            'distribution': -0.5, 'selling pressure': -0.7,
-            'correction': -0.4, 'pullback': -0.3, 'consolidation': -0.2,
-            'downtrend': -0.8, 'red': -0.7, 'loss': -0.8,
-            'bot': -0.9, 'bots': -0.9, 'manipulation': -2.7,
-
-            # BEARISH (-2.5 to -1.0) - Negative sentiment
-            'bearish': -1.4, 'bear': -1.3, 'bear market': -1.6,
-            'dump': -1.8, 'dumping': -2.0, 'dumped': -2.1,
-            'paper hands': -1.5, 'weak hands': -1.3,
-            'fud': -1.9, 'fear': -1.2, 'panic': -1.6,
-            'crash': -2.0, 'crashing': -2.2, 'crashed': -2.3,
-            'short': -0.8, 'shorting': -1.0, 'shorts': -0.9,
-            'sell': -1.0, 'selling': -1.1, 'sold': -1.2,
-            'exit': -0.8, 'top signal': -1.4, 'local top': -1.2,
-            'bagholding': -1.6, 'bagholder': -1.4, 'bag holder': -1.4,
-            'cope': -1.3, 'copium': -1.4, 'hopium': -0.8,
-            'ngmi': -1.5, 'not gonna make it': -1.5,
-            'jeet': -1.7, 'jeeted': -1.8, 'jeeting': -1.7,
-            'fade': -1.3, 'faded': -1.4, 'fading': -1.3,
-            'dip': -0.6, 'dipping': -0.8,
-
-            # VERY BEARISH (-4.0 to -2.5) - Scam/danger signals
-            'rekt': -2.2, 'wrecked': -2.0, 'liquidated': -2.5,
-            'rugpull': -3.5, 'rug pull': -3.5, 'rug': -3.0, 'rugged': -3.6,
-            'scam': -3.2, 'scammer': -3.3, 'scamming': -3.4,
-            'honeypot': -3.5, 'ponzi': -3.4, 'pyramid': -3.0,
-            'exit scam': -3.8, 'exit liquidity': -2.9,
-            'pump and dump': -3.0, 'pnd': -2.8,
-            'fake': -2.5, 'fraud': -3.0, 'stolen': -2.8,
-            'hack': -2.6, 'hacked': -2.8, 'exploit': -2.7,
-            'worthless': -2.9, 'dead': -2.6, 'dead coin': -3.0,
-            'abandon': -2.5, 'abandoned': -2.7,
-            'cnbc': -2.1,
-
-            # MEME COIN SPECIFIC
-            'pepe': 0.3, 'wojak': 0.2,
-            'doge': 0.4, 'shib': 0.3, 'bonk': 0.4,
-            'nfa': 0.0, 'dyor': 0.1, 'zoom out': 0.3,
-
-            # TECHNICAL TRADING TERMS
-            'golden cross': 2.2, 'death cross': -2.3,
-            'bullish divergence': 1.8, 'bearish divergence': -1.6,
-            'higher lows': 1.3, 'lower highs': -1.2,
-            'ascending triangle': 1.4, 'descending triangle': -1.3,
-            'cup and handle': 1.6, 'head and shoulders': -1.5,
-            'double bottom': 1.5, 'double top': -1.4,
-            'oversold': 1.2, 'breakdown': -1.8,
-            'rsi': 0.0, 'macd': 0.0, 'moving average': 0.0,
-
-            # COMMUNITY/CULTURAL
-            'community': 0.5, 'ecosystem': 0.4, 'adoption': 0.8,
-            'partnership': 0.7, 'launch': 0.6, 'listing': 0.8,
-            'burned': 0.7, 'buyback': 0.9, 'staking': 0.4,
-            'utility': 0.5, 'roadmap': 0.3, 'whitepaper': 0.2,
-            'audit': 0.6, 'audited': 0.7, 'doxxed': 0.5,
-            'airdrop': 0.0, 'giveaway': -0.8,
-            'telegram': -0.5, 'discord': -0.4,
-
-            # EXCHANGE/LIQUIDITY TERMS
-            'binance': 0.6, 'coinbase': 0.6, 'dex': 0.3,
-            'liquidity': 0.5, 'locked liquidity': 1.0,
-            'unlocked': -1.5, 'unlock': -1.3,
-            'mcap': 0.0, 'market cap': 0.0, 'fdv': 0.0,
-            'volume': 0.2, 'high volume': 0.6,
-            'low liquidity': -0.9, 'illiquid': -1.1,
-        }
-
-        self.vader.lexicon.update(crypto_lexicon)
-        print(f"[OK] Sentiment analyzer initialized with {len(crypto_lexicon)} crypto terms")
-        print("[OK] Lexicon covers: bullish/bearish, meme slang, TA, scam signals")
-
-    def calculate_bot_probability(self, user_data):
-        """Calculate probability that an account is a bot"""
-        score = 0
-
-        # Account age (if available from user object)
-        # Followers
-        followers = user_data.get('followers', 0)
-        if followers < 10:
-            score += 0.3
-        elif followers < 100:
-            score += 0.1
-
-        # Following/follower ratio
-        following = user_data.get('following', 0)
-        if followers > 0 and following / (followers + 1) > 50:
-            score += 0.3
-
-        # Username pattern
-        import re
-        username = user_data.get('username', '')
-        if re.match(BOT_USERNAME_PATTERN, username):
-            score += 0.4
-
-        # Default profile indicators
-        if not user_data.get('bio'):
-            score += 0.1
-        if not user_data.get('profile_image_custom'):
-            score += 0.1
-
-        return min(score, 1.0)
-
-    def calculate_influence_weight(self, user_data, engagement_data):
-        """Calculate normalized influence weight (0-1 scale) using Yale engagement coefficient
-
-        Based on Yale research: "Social Media Engagement and Cryptocurrency Performance"
-        - Optimal engagement: 0.0001 to 0.001 = highest returns (~200% in study)
-        - Too low (< 0.00001): no real interest
-        - Too high (> 0.001): likely bot manipulation
-
-        Returns:
-            float: 0.0 (no influence) to 1.0 (maximum influence)
-        """
-        followers = user_data.get('followers', 0)
-        retweets = engagement_data.get('retweets', 0)
-        likes = engagement_data.get('likes', 0)
-
-        # Yale formula: Retweets are weighted at 0.31x (require more effort than likes)
-        # Interaction coefficients from research: likes=1.0, retweets=0.31, replies=0.19
-        weighted_engagement = (likes * 1.0) + (retweets * 0.31)
-
-        # Calculate engagement coefficient (normalized by follower count)
-        engagement_coef = weighted_engagement / (followers + 1)
-
-        # Map to 0-1 scale based on Yale optimal thresholds
-        if engagement_coef < 0.00001:
-            # Too low - no real interest
-            base_weight = 0.0
-        elif engagement_coef < 0.0001:
-            # Below optimal - scale from 0.0 to 1.0
-            base_weight = engagement_coef / 0.0001
-        elif engagement_coef <= 0.001:
-            # OPTIMAL RANGE - maximum weight
-            base_weight = 1.0
-        elif engagement_coef <= 0.01:
-            # Above optimal - potential bot activity, decrease weight
-            # Scale from 1.0 down to 0.3
-            excess = (engagement_coef - 0.001) / 0.009
-            base_weight = 1.0 - (excess * 0.7)
-        else:
-            # Very high (> 0.01) - likely bot swarm, minimal weight
-            base_weight = 0.1
-
-        # Apply bot probability penalty
-        bot_prob = self.calculate_bot_probability(user_data)
-        bot_mult = 1.0 - (bot_prob * 0.8)  # Reduce weight by up to 80% for bots
-
-        # Final normalized weight (0-1 scale)
-        final_weight = base_weight * bot_mult
-
-        return max(0.0, min(1.0, final_weight))  # Ensure stays in 0-1 range
-
-    def detect_pump_pattern(self, tweets_batch):
-        """Detect coordinated pump patterns"""
-        if len(tweets_batch) < 10:
-            return 0
-
-        indicators = 0
-
-        # Check text similarity
-        texts = [t['text'].lower() for t in tweets_batch]
-        unique_texts = set(texts)
-        if len(unique_texts) / len(texts) < 0.3:  # 70%+ similar
-            indicators += 0.3
-
-        # Check for new accounts
-        new_accounts = sum(1 for t in tweets_batch
-                          if t.get('followers', 0) < 100)
-        if new_accounts / len(tweets_batch) > 0.6:
-            indicators += 0.3
-
-        # Check for spam keywords concentration
-        spam_count = sum(1 for t in tweets_batch
-                        if any(spam in t['text'].lower() for spam in SPAM_KEYWORDS))
-        if spam_count / len(tweets_batch) > 0.5:
-            indicators += 0.4
-
-        return min(indicators, 1.0)
-
-    def analyze_sentiment_vader(self, text):
-        """Fast VADER sentiment analysis"""
-        scores = self.vader.polarity_scores(text)
-        # Return compound score (-1 to 1)
-        return scores['compound']
+        """Initialize VADER with crypto lexicon"""
+        self.vader = init_vader_with_crypto_lexicon()
 
     def calculate_volume_spike(self, token, current_count):
         """Calculate if there's a volume spike (PRIMARY SIGNAL)"""
@@ -427,49 +162,9 @@ class TwitterSentiment:
         if len(self.sentiment_history[token]) > 3:
             self.sentiment_history[token] = self.sentiment_history[token][-3:]
 
-    def auto_refresh_cookies(self):
-        """Automatically refresh cookies when they expire"""
-        print("\n[AUTO-REFRESH] Cookies expired, refreshing...")
-        try:
-            cookies = refresh_cookies(headless=False)
-            if cookies and save_cookies(cookies):
-                print("[AUTO-REFRESH] Cookies refreshed successfully!")
-                # Reload cookies into client
-                self.client.load_cookies("cookies.json")
-                self.cookies_refreshed = True
-                return True
-            else:
-                print("[AUTO-REFRESH] Failed to refresh cookies")
-                return False
-        except Exception as e:
-            print(f"[AUTO-REFRESH] Error: {e}")
-            return False
-
     def init_twitter_client(self):
-        """Initialize twikit client with cookies.json"""
-        if not os.path.exists("cookies.json"):
-            print("[ERROR] cookies.json not found!")
-            print("Please ensure cookies.json exists with Twitter auth tokens")
-            sys.exit(1)
-
-        try:
-            self.client = Client('en-US')
-
-            # Load cookies
-            with open("cookies.json", 'r') as f:
-                cookie_data = json.load(f)
-
-            # Handle browser export format if needed
-            if isinstance(cookie_data, dict) and 'cookies' in cookie_data:
-                cookies = cookie_data['cookies']
-                with open("cookies.json", 'w') as f:
-                    json.dump(cookies, f)
-
-            self.client.load_cookies("cookies.json")
-            print("[OK] Twitter client initialized")
-        except Exception as e:
-            print(f"[ERROR] Twitter client init failed: {e}")
-            sys.exit(1)
+        """Initialize twikit client"""
+        self.client = init_twitter_client()
 
     async def get_tweets_for_token(self, token):
         """Fetch tweets for a token with enhanced data"""
@@ -494,19 +189,30 @@ class TwitterSentiment:
 
                     user = tweet.user if hasattr(tweet, 'user') and tweet.user else None
 
+                    # Quality filter - skip low-follower accounts (reduces 56% of bot noise)
+                    followers = getattr(user, 'followers_count', 0) if user else 0
+                    if followers < MIN_FOLLOWERS:
+                        continue
+
                     tweet_data = {
                         'tweet_id': tweet.id,
                         'token': token.upper(),  # Always uppercase for consistency
                         'text': tweet.text,
                         'username': getattr(user, 'screen_name', 'unknown') if user else 'unknown',
-                        'followers': getattr(user, 'followers_count', 0) if user else 0,
+                        'followers': followers,
                         'following': getattr(user, 'following_count', getattr(user, 'friends_count', 0)) if user else 0,
                         'bio': getattr(user, 'description', None) if user else None,
                         'profile_image_custom': hasattr(user, 'profile_image_url') if user else False,
+                        'verified': getattr(user, 'verified', False) if user else False,
                         'retweets': getattr(tweet, 'retweet_count', 0) or 0,
                         'likes': getattr(tweet, 'favorite_count', 0) or 0,
+                        'replies': getattr(tweet, 'reply_count', 0) or 0,
+                        'quotes': getattr(tweet, 'quote_count', 0) or 0,
                         'created_at': getattr(tweet, 'created_at', datetime.now()),
-                        'timestamp': datetime.now()
+                        'timestamp': datetime.now(),
+                        # Extract metadata for AI analysis
+                        'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
+                        'hashtag_count': tweet.text.count('#')
                     }
 
                     collected.append(tweet_data)
@@ -524,7 +230,8 @@ class TwitterSentiment:
             # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
             if ('404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg) and not self.cookies_refreshed:
                 print(f"[WARN] Authentication error detected: {e}")
-                if self.auto_refresh_cookies():
+                if auto_refresh_cookies(self.client):
+                    self.cookies_refreshed = True
                     print(f"[RETRY] Retrying search for {token}...")
                     return await self.get_tweets_for_token(token)
             print(f"[ERROR] Failed to fetch {token}: {e}")
@@ -553,33 +260,46 @@ class TwitterSentiment:
             if volume_spike >= 2.0:  # 2x baseline = strong signal
                 volume_alerts.append((token, volume_spike, len(tweets)))
 
+            # Calculate average sentiment for velocity tracking
+            sentiments = [analyze_sentiment(self.vader, t['text']) for t in tweets]
+            avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
+
+            # Calculate velocity metrics
+            velocity_metrics = self.calculate_velocity_metrics(token, avg_sentiment, volume_spike)
+            if velocity_metrics:
+                sentiment_velocity = velocity_metrics['sentiment_velocity']
+                volume_acceleration = velocity_metrics['volume_acceleration']
+                momentum_score = velocity_metrics['momentum']
+            else:
+                sentiment_velocity = None
+                volume_acceleration = None
+                momentum_score = None
+
+            # Update history for next cycle
+            self.update_sentiment_history(token, avg_sentiment, volume_spike)
+
             # Detect pump patterns
-            pump_score = self.detect_pump_pattern(tweets)
+            pump_score = detect_pump_pattern(tweets, SPAM_KEYWORDS)
 
             for tweet in tweets:
                 # Analyze sentiment
-                sentiment = self.analyze_sentiment_vader(tweet['text'])
+                sentiment = analyze_sentiment(self.vader, tweet['text'])
 
                 # Calculate influence-weighted score
-                influence_weight = self.calculate_influence_weight(
-                    {'followers': tweet['followers'],
-                     'following': tweet['following'],
-                     'username': tweet['username'],
-                     'bio': tweet['bio'],
-                     'profile_image_custom': tweet['profile_image_custom']},
-                    {'retweets': tweet['retweets'], 'likes': tweet['likes']}
-                )
-
-                weighted_sentiment = sentiment * influence_weight
-
-                # Bot probability
-                bot_prob = self.calculate_bot_probability({
+                user_data = {
                     'followers': tweet['followers'],
                     'following': tweet['following'],
                     'username': tweet['username'],
                     'bio': tweet['bio'],
                     'profile_image_custom': tweet['profile_image_custom']
-                })
+                }
+                engagement_data = {'retweets': tweet['retweets'], 'likes': tweet['likes']}
+
+                influence_weight = calculate_influence_weight(user_data, engagement_data)
+                weighted_sentiment = sentiment * influence_weight
+
+                # Bot probability
+                bot_prob = calculate_bot_probability(user_data)
 
                 # Determine alert level
                 if weighted_sentiment > 500 or (tweet['followers'] > 10_000_000 and abs(sentiment) > 0.5):
@@ -598,9 +318,12 @@ class TwitterSentiment:
                         INSERT INTO twitter_sentiment
                         (tweet_id, token, tweet_text, sentiment_score, sentiment_label,
                          author_username, author_followers, retweet_count, like_count,
+                         reply_count, quote_count,
                          tweet_created_at, scraped_at, weighted_score, alert_level,
-                         is_whale, volume_spike, bot_probability, pump_score, source)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         is_whale, volume_spike, bot_probability, pump_score, source,
+                         verified, has_urls, hashtag_count, following_count,
+                         sentiment_velocity, volume_acceleration, momentum_score)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tweet_id, token) DO NOTHING
                     """, (
                         tweet['tweet_id'],
@@ -612,6 +335,8 @@ class TwitterSentiment:
                         tweet['followers'],
                         tweet['retweets'],
                         tweet['likes'],
+                        tweet['replies'],
+                        tweet['quotes'],
                         tweet['created_at'],
                         tweet['timestamp'],
                         round(weighted_sentiment, 4),
@@ -620,14 +345,22 @@ class TwitterSentiment:
                         round(volume_spike, 2),
                         round(bot_prob, 3),
                         round(pump_score, 3) if pump_score > 0.5 else None,
-                        'general_search'  # Source identifier for general meme coin searches
+                        'general_search',  # Source identifier for general meme coin searches
+                        tweet.get('verified', False),
+                        tweet.get('has_urls', False),
+                        tweet.get('hashtag_count', 0),
+                        tweet.get('following', 0),
+                        round(sentiment_velocity, 6) if sentiment_velocity is not None else None,
+                        round(volume_acceleration, 6) if volume_acceleration is not None else None,
+                        round(momentum_score, 6) if momentum_score is not None else None
                     ))
 
                     if cursor.rowcount > 0:
                         saved += 1
 
-                except Exception as e:
-                    self.db_conn.rollback()
+                except Exception:
+                    if self.db_conn:
+                        self.db_conn.rollback()
 
         self.db_conn.commit()
         cursor.close()
@@ -692,7 +425,7 @@ class TwitterSentiment:
                 # Calculate average sentiment from the actual tweets
                 sentiments = []
                 for tweet in tweets:
-                    sent = self.analyze_sentiment_vader(tweet['text'])
+                    sent = analyze_sentiment(self.vader, tweet['text'])
                     sentiments.append(sent)
                 avg_sent = sum(sentiments) / len(sentiments) if sentiments else 0
 

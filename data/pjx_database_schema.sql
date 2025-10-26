@@ -84,7 +84,8 @@ CREATE TABLE IF NOT EXISTS company_profiles (
 -- TABLE: twitter_sentiment
 -- Purpose: Stores Twitter sentiment data for crypto trading signals
 -- Scrapers: twitter_sentiment.py, twitter_whales.py
--- Features: Volume tracking, bot detection, whale tracking, pump detection
+-- Features: Volume tracking, bot detection, whale tracking, pump detection,
+--           momentum metrics, verified accounts, quality filters
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS twitter_sentiment (
@@ -98,6 +99,8 @@ CREATE TABLE IF NOT EXISTS twitter_sentiment (
     author_followers INTEGER,
     retweet_count INTEGER DEFAULT 0,
     like_count INTEGER DEFAULT 0,
+    reply_count INTEGER DEFAULT 0,
+    quote_count INTEGER DEFAULT 0,
     tweet_created_at TIMESTAMP WITH TIME ZONE,
     scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     weighted_score NUMERIC(10,4),
@@ -108,6 +111,13 @@ CREATE TABLE IF NOT EXISTS twitter_sentiment (
     pump_score NUMERIC(4,3),
     influence_weight NUMERIC(10,2),
     source VARCHAR(50) DEFAULT 'general_search',
+    verified BOOLEAN DEFAULT false,
+    has_urls BOOLEAN DEFAULT false,
+    hashtag_count INTEGER DEFAULT 0,
+    following_count INTEGER DEFAULT 0,
+    sentiment_velocity NUMERIC(10,6),
+    volume_acceleration NUMERIC(10,6),
+    momentum_score NUMERIC(10,6),
     CONSTRAINT unique_tweet_token UNIQUE (tweet_id, token)
 );
 
@@ -127,6 +137,10 @@ CREATE INDEX IF NOT EXISTS idx_volume_spike ON twitter_sentiment(volume_spike DE
 CREATE INDEX IF NOT EXISTS idx_bot_probability ON twitter_sentiment(bot_probability);
 CREATE INDEX IF NOT EXISTS idx_pump_score ON twitter_sentiment(pump_score);
 CREATE INDEX IF NOT EXISTS idx_source ON twitter_sentiment(source);
+CREATE INDEX IF NOT EXISTS idx_verified ON twitter_sentiment(verified);
+CREATE INDEX IF NOT EXISTS idx_momentum_score ON twitter_sentiment(momentum_score DESC);
+CREATE INDEX IF NOT EXISTS idx_sentiment_velocity ON twitter_sentiment(sentiment_velocity DESC);
+CREATE INDEX IF NOT EXISTS idx_volume_acceleration ON twitter_sentiment(volume_acceleration DESC);
 
 -- ============================================================================
 -- MATERIALIZED VIEW: hourly_twitter_volume

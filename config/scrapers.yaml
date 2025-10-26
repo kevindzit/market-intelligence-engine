@@ -75,10 +75,18 @@ scrapers:
   - name: Twitter Sentiment Analyzer
     script: crypto_scrapers/twitter_sentiment.py
     category: crypto
-    description: Scrapes Twitter for crypto sentiment (BTC, ETH, SOL, PEPE, DOGE)
+    description: Scrapes Twitter for crypto sentiment (PEPE, DOGE, SHIB, BONK, WIF)
     enabled: false  # Set to true after running twitter_login.py
     free_tier: "Free (twikit - no API cost)"
-    interval: "15 minutes"
+    interval: "5 minutes"
+
+  - name: Twitter Whale Tracker
+    script: crypto_scrapers/twitter_whales.py
+    category: crypto
+    description: Monitors 45 high-signal whale accounts (alpha callers, on-chain analysts, insiders)
+    enabled: false  # Set to true after running twitter_login.py
+    free_tier: "Free (twikit - no API cost)"
+    interval: "10 minutes"
 
 # ==================== FUTURE SCRAPERS ====================
 # To add a new scraper, copy this template:

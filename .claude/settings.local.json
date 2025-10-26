@@ -28,7 +28,8 @@
       "Bash(tree:*)",
       "Bash(psql:*)",
       "Bash(mkdir:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(docker exec:*)"
     ],
     "deny": [],
     "ask": []

@@ -6,11 +6,11 @@ Instructions for Claude Code on the PJX Crypto Trading System.
 
 ## Current Project Focus
 
-**PRIMARY GOAL: Build a robust data collection system**
+**PRIMARY GOAL: Collect the richest possible crypto market data**
 
-We are building a **data scraping infrastructure** to collect market data, then use **AI (Claude API) to analyze and make trading decisions**.
+We have built **production-ready Twitter sentiment scrapers** using research-backed strategies. Now duplicating these working systems to cover all parts of the crypto market.
 
-Trading execution comes MUCH LATER.
+**Current Phase**: Scaling Twitter scrapers across different crypto sectors (meme coins, DeFi, Layer 1s, etc.)
 
 ---
 
@@ -32,55 +32,285 @@ Trading execution comes MUCH LATER.
 
 ## Development Rules
 
-### File Management
-- **Keep files under 800 lines** - if longer, split into new files
-- **DO NOT move files without asking** - you can create new files but no moving
-- **NEVER create new virtual environments** - use existing setup
-- **Update requirements.txt** after adding any new package
+### DO:
+- ✅ **Keep files under 800 lines** - if longer, split into new files
+- ✅ **Ask before creating multiple files** - build one component at a time
+- ✅ **Use real data only** - no fake/synthetic data, fail the script if data unavailable
+- ✅ **Keep code simple and readable** - simple over clever, self-explanatory code
+- ✅ **Update requirements.txt** after adding any new package
 
-### Code Style
-- **No fake/synthetic data** - always use real data or fail the script
-- **Minimal error handling** - user wants to see errors, not over-engineered try/except blocks
-- **Minimal comments** - code should be self-explanatory, don't over-comment
-- **Simple over clever** - readable code beats clever optimizations
+### DON'T:
+- ❌ **Move files without asking** - you can create new files but no moving
+- ❌ **Create new virtual environments** - use existing setup
+- ❌ **Over-engineer error handling** - user wants to see errors, not excessive try/except blocks
+- ❌ **Over-comment code** - code should be self-explanatory
+- ❌ **Build complex multi-agent systems** - keep iterations small
+- ❌ **Use local LLMs** - APIs are cheaper than $5k GPU server
+- ❌ **Create 5+ files at once** - build incrementally
+- ❌ **Build trading execution** until data + AI validated
 
 ---
 
-## Current System (8 Active Scrapers)
+## Current System (10 Active Scrapers)
 
-### Data Collection
+### Traditional Finance Data
 1. **News** - NewsAPI + RSS → ChromaDB
 2. **Congressional Trades** - Senate + House → PostgreSQL
 3. **SEC Filings** - EDGAR RSS → PostgreSQL
 4. **Economic Data** - FRED API → PostgreSQL
 5. **Company Fundamentals** - FMP + yfinance → PostgreSQL
 
+### Crypto Twitter Intelligence (Production-Ready)
+6. **Twitter Sentiment** (crypto_scrapers/twitter_sentiment.py) - 510 lines
+   - Tracks: BTC, ETH, SOL, PEPE, DOGE
+   - VADER + 150+ crypto lexicon terms
+   - Yale engagement coefficient (0-1 normalized)
+   - Velocity tracking (sentiment + volume acceleration)
+   - Reply/quote count metadata
+   - Bot swarm detection
+   - 5-minute polling cycles
+
+7. **Twitter Whales** (crypto_scrapers/twitter_whales.py) - 572 lines
+   - Tracks: 38 whale accounts (7 slots available, MAX = 45)
+   - Categories: Alpha Callers (13), Insiders (2), On-Chain (8), TA (3), High-Profile (6), Platform (6)
+   - Same sentiment engine as general scraper
+   - 10-minute polling cycles
+   - Source tagging for whale vs general tweets
+
+8. **Shared Twitter Functions** (nice_funcs/twitter_funcs.py) - 498 lines
+   - VADER + 150+ crypto lexicon
+   - Yale engagement coefficient
+   - Bot detection & pump pattern detection
+   - Twitter client initialization & cookie management
+   - All common functions imported by scrapers
+
 ### Infrastructure
-- **PostgreSQL** (Docker, port 54594) - Structured data
-- **ChromaDB** (chroma_db_news/) - News vectors
+- **PostgreSQL** (Docker, port 54594) - All structured data
+- **ChromaDB** (chroma_db_news/) - News article vectors
 - **Orchestrator** - Manages all scrapers via config/scrapers.yaml
-- **.env file** - All API keys in one place
+- **.env file** - All API keys (includes Twitter credentials)
 
 ---
 
-## Next to Build
+## Twitter Scraper Strategy (Proven & Production-Ready)
 
-### 1. Twitter/X Sentiment Scraper
-- Use **twikit** library (FREE, no $100/month API)
-- Search by keywords: BTC, ETH, SOL, PEPE, DOGE
-- Analyze sentiment with HuggingFace model
-- Store in PostgreSQL
+### Core Technology Stack
+- **twikit** - Free Twitter scraping (no $100/month API needed)
+- **VADER** - Outperforms FinBERT/CryptoBERT for crypto Twitter (research-backed)
+- **Custom Lexicon** - 150+ crypto terms (bullish/bearish, meme slang, scam signals)
+- **Yale Engagement Coefficient** - Formula: (likes × 1.0 + retweets × 0.31) / followers
+  - Optimal range: 0.0001 to 0.001 (200% returns in Yale study)
+  - Normalized to 0-1 scale (prevents single-tweet domination)
+  - Bot swarm detection when > 0.001
 
-### 2. Crypto Price Data
-- CoinGecko API (free tier: 10k calls/month)
-- Track BTC, ETH, SOL, PEPE, DOGE prices
-- Store in PostgreSQL
+### Advanced Features
+- **Velocity Tracking** - Detects sentiment_velocity + volume_acceleration (10-15 min earlier pump signals)
+- **Momentum Score** - sentiment_velocity × volume_acceleration (both rising = strong buy)
+- **Reply/Quote Metadata** - Genuine engagement metrics (74% accurate pump detection)
+- **In-Memory History** - Last 3 cycles per token for per-minute velocity calculations
+- **Bot Probability** - Flags likely bot activity
+- **Pump Score** - Detects artificial pump schemes
+- **Influence Weight** - 0-1 normalized engagement coefficient
 
-### 3. AI Decision Layer (Later)
-- Pull data from PostgreSQL
-- Send to Claude API for analysis
-- Get BUY/SELL/HOLD decision + reasoning
-- Log decisions to database
+### Current Deployment
+- **General Sentiment**: 5 tokens (PEPE, DOGE, SHIB, BONK, WIF) × 5-min cycles + BTC for market indicator
+- **Whale Tracking**: 38 active accounts × 10-min cycles (7 slots available, MAX = 45)
+- **Rate Limits**: 50 calls/15min per endpoint (monitored in production)
+
+### Research Backing
+- **VADER > FinBERT** for crypto Twitter (multiple studies)
+- **Yale engagement coefficient** - 200% returns in live study
+- **Reply/quote counts** - 74% accurate pump detection
+- **Velocity tracking** - 10-15 min earlier signal detection
+- **150+ crypto lexicon** - From GitHub PR #81 + 2025 crypto slang research
+- **38 whale accounts** - October 2025 (removed 7 suspended/deleted accounts)
+
+---
+
+## Creating New Twitter Scrapers - Quick Start Guide
+
+When creating ANY new Twitter scraper, follow this guide:
+
+### Step 1: Review Reference Files
+
+**ALWAYS review these files first:**
+1. **[crypto_scrapers/twitter_sentiment.py](crypto_scrapers/twitter_sentiment.py)** - Reference implementation for token-based scraping (510 lines)
+2. **[crypto_scrapers/twitter_whales.py](crypto_scrapers/twitter_whales.py)** - Reference implementation for account-based scraping (572 lines)
+3. **[nice_funcs/twitter_funcs.py](nice_funcs/twitter_funcs.py)** - Shared functions you MUST import (498 lines)
+4. **[data/pjx_database_schema.sql](data/pjx_database_schema.sql)** - Database schema (all scrapers use `twitter_sentiment` table)
+5. **[ratelimits.md](ratelimits.md)** - Twitter API rate limits (50 calls/15min for search, 50 for user tweets)
+6. **[cookies.json](cookies.json)** - Twitter authentication (already configured, don't modify)
+
+### Step 2: Import Shared Functions
+
+**ALWAYS import from nice_funcs/twitter_funcs.py:**
+
+```python
+from nice_funcs.twitter_funcs import (
+    setup_httpx_patching,              # Must call before importing twikit
+    init_vader_with_crypto_lexicon,    # 150+ crypto terms pre-loaded
+    init_twitter_client,               # Handles cookies.json automatically
+    auto_refresh_cookies,              # Auto-refresh on auth errors
+    get_db_connection,                 # PostgreSQL connection
+    calculate_bot_probability,         # Bot detection (0-1 score)
+    calculate_influence_weight,        # Yale engagement coefficient (0-1 normalized)
+    detect_pump_pattern,               # Coordinated pump detection
+    analyze_sentiment,                 # VADER sentiment analysis wrapper
+    SPAM_KEYWORDS                      # Pre-defined spam filter list
+)
+
+# MUST call this before importing twikit!
+setup_httpx_patching()
+
+from twikit import TooManyRequests
+```
+
+### Step 3: Database Integration
+
+**All Twitter scrapers use the SAME table:** `twitter_sentiment`
+
+**Required columns in INSERT:**
+```sql
+INSERT INTO twitter_sentiment
+(tweet_id, token, tweet_text, sentiment_score, sentiment_label,
+ author_username, author_followers, retweet_count, like_count,
+ reply_count, quote_count,
+ tweet_created_at, scraped_at, weighted_score, alert_level,
+ is_whale, volume_spike, bot_probability, pump_score, influence_weight, source)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (tweet_id, token) DO NOTHING  -- Prevents duplicates across ALL scrapers
+```
+
+**Key points:**
+- `source` field identifies which scraper created the record (e.g., 'general_search', 'whale_tracker', 'defi_tracker')
+- `ON CONFLICT DO NOTHING` ensures no duplicates even if multiple scrapers find the same tweet
+- All scrapers contribute to unified dataset for AI analysis
+
+### Step 4: Rate Limits to Follow
+
+**From [ratelimits.md](ratelimits.md) - Reset every 15 minutes:**
+- `search_tweet` (SearchTimeline): **50 calls/15min**
+- `get_user_tweets` (UserTweets): **50 calls/15min**
+- `get_user_by_screen_name`: **95 calls/15min**
+
+**Best practices:**
+- Keep token lists to 5-10 tokens max (twitter_sentiment.py tracks 5 tokens × 5min cycles = 30 searches per 15min)
+- Whale tracker: 38 accounts × 10min cycles = safe under 50 limit (7 slots available for new whales)
+- Add `time.sleep(randint(1, 3))` between API calls
+- Use `TooManyRequests` exception handling with `e.rate_limit_reset`
+
+### Step 5: Script Template
+
+**Choose your base template:**
+
+**Option A: Token-Based Scraper** (like twitter_sentiment.py)
+```python
+TOKENS_TO_TRACK = ["TOKEN1", "TOKEN2", "TOKEN3"]  # 5-10 max
+POLLING_INTERVAL = 5 * 60  # 5 minutes
+TWEETS_PER_TOKEN = 30
+
+# Search for $TOKEN mentions
+tweets = await self.client.search_tweet(f"${token}", product='Latest')
+```
+
+**Option B: Account-Based Scraper** (like twitter_whales.py)
+```python
+ACCOUNTS_TO_TRACK = {
+    'username1': 'Description',
+    'username2': 'Description'
+}
+POLLING_INTERVAL = 10 * 60  # 10 minutes
+TWEETS_PER_ACCOUNT = 20
+
+# Get user timeline
+user = await self.client.get_user_by_screen_name(username)
+tweets = await self.client.get_user_tweets(user.id, tweet_type='Tweets', count=20)
+```
+
+### Step 6: Required Features
+
+**Every new scraper MUST include:**
+1. ✅ Sentiment analysis via `analyze_sentiment(self.vader, text)`
+2. ✅ Bot detection via `calculate_bot_probability(user_data)`
+3. ✅ Yale engagement coefficient via `calculate_influence_weight(user_data, engagement_data)`
+4. ✅ Reply/quote count collection (`reply_count`, `quote_count`)
+5. ✅ Spam filtering using `SPAM_KEYWORDS`
+6. ✅ Auto-refresh cookies on auth errors via `auto_refresh_cookies(self.client)`
+7. ✅ Rate limit handling with `TooManyRequests` exception
+8. ✅ Proper `source` field in database (unique identifier for your scraper)
+
+### Step 7: File Structure
+
+**Keep it simple:**
+- **One file per scraper** (under 800 lines)
+- **Location**: `crypto_scrapers/twitter_[category].py`
+- **Examples**: `twitter_defi.py`, `twitter_layer1.py`, `twitter_ai_tokens.py`
+
+**Naming convention:**
+- Token-based: `twitter_[category].py` (e.g., `twitter_defi.py` for DeFi tokens)
+- Account-based: `twitter_[category]_whales.py` (e.g., `twitter_defi_whales.py` for DeFi influencers)
+
+### Step 8: Configuration
+
+**Add to [config/scrapers.yaml](config/scrapers.yaml):**
+```yaml
+- name: Twitter DeFi
+  script: crypto_scrapers/twitter_defi.py
+  category: crypto
+  description: Tracks DeFi token sentiment (AAVE, UNI, COMP, etc.)
+  enabled: true
+  free_tier: "Free (twikit)"
+  interval: "5 minutes"
+```
+
+### Step 9: Testing
+
+**Before deploying:**
+1. ✅ Syntax check: `python -m py_compile crypto_scrapers/twitter_[name].py`
+2. ✅ Test run: `python crypto_scrapers/twitter_[name].py` (watch for rate limits)
+3. ✅ Database check: Query `twitter_sentiment` table to verify `source` field is unique
+4. ✅ Check duplicate prevention: Run multiple scrapers simultaneously, verify no duplicate tweets
+
+### Common Patterns
+
+**Velocity tracking** (optional but recommended):
+```python
+self.sentiment_history = defaultdict(list)
+velocity = self.calculate_velocity_metrics(token, current_sentiment, current_volume)
+if velocity and velocity['momentum'] > 0.05:
+    print(f"🚀 MOMENTUM ALERT: {token}")
+```
+
+**Volume spike detection** (for token scrapers):
+```python
+volume_spike = self.calculate_volume_spike(token, tweet_count)
+if volume_spike >= 2.0:
+    print(f"🚨 VOLUME SPIKE: {token} at {volume_spike:.1f}x normal")
+```
+
+**Pump detection** (for token scrapers):
+```python
+pump_score = detect_pump_pattern(tweets, SPAM_KEYWORDS)
+if pump_score > 0.7:
+    print(f"⚠️ PUMP WARNING: {token}")
+```
+
+### Summary Checklist
+
+When creating a new Twitter scraper:
+- [ ] Reviewed reference files (twitter_sentiment.py, twitter_whales.py, twitter_funcs.py)
+- [ ] Checked database schema (data/pjx_database_schema.sql)
+- [ ] Verified rate limits (ratelimits.md)
+- [ ] Imported all required functions from nice_funcs/twitter_funcs.py
+- [ ] Called setup_httpx_patching() before importing twikit
+- [ ] Set unique `source` identifier in database inserts
+- [ ] Added `ON CONFLICT (tweet_id, token) DO NOTHING` to prevent duplicates
+- [ ] Included bot detection, Yale coefficient, reply/quote counts
+- [ ] Handled rate limits with TooManyRequests exception
+- [ ] Added auto-refresh cookies on auth errors
+- [ ] Kept file under 800 lines
+- [ ] Added to config/scrapers.yaml
+- [ ] Tested for duplicates and rate limit compliance
 
 ---
 
@@ -102,60 +332,31 @@ Trading execution comes MUCH LATER.
 - `psycopg2-binary` - PostgreSQL
 - `chromadb` - Vector database
 - `twikit` - Twitter scraping (free!)
-- `transformers` - Sentiment analysis
-- `anthropic` - Claude API (later)
+- `vaderSentiment` - Crypto Twitter sentiment (outperforms FinBERT/BERT models)
+- `anthropic` - Claude API (for AI decision layer)
 - `requests` - HTTP calls
 - `python-dotenv` - Environment variables
 
----
 
-## How to Add a Scraper
-
-### 1. Create the scraper file
-```bash
-# Example: crypto_scrapers/twitter_sentiment.py
-```
-
-### 2. Add to config/scrapers.yaml
-```yaml
-- name: Twitter Sentiment
-  script: crypto_scrapers/twitter_sentiment.py
-  category: crypto
-  description: Analyzes Twitter sentiment for crypto
-  enabled: true
-  free_tier: "Free (twikit)"
-  interval: "15 minutes"
-```
-
-### 3. Add API keys to .env (if needed)
-```bash
-TWITTER_USERNAME=your_username
-TWITTER_EMAIL=your_email
-TWITTER_PASSWORD=your_password
-```
-
-### 4. Update requirements.txt
-```bash
-pip freeze > requirements.txt
-```
-
----
-
-## Database Tables
+## Database Schema
 
 ### Current Tables
 1. `congressional_trades` - Senate + House trade data
 2. `economic_indicators` - FRED economic data
 3. `sec_filings` - SEC filing data
 4. `company_profiles` - Company fundamentals
+5. **`twitter_sentiment`** - Crypto Twitter data (with velocity, engagement, bot detection)
+   - Columns: tweet_id, token, sentiment_score, weighted_score, alert_level, is_whale, volume_spike, bot_probability, pump_score, influence_weight, reply_count, quote_count, source
+   - Indexes: token, scraped_at, sentiment_score, alert_level, weighted_score, is_whale, volume_spike
+   - Views: recent_volume_spikes, twitter_trading_signals
+   - Materialized View: hourly_twitter_volume
 
-### To Add
-- `crypto_prices` - BTC/ETH/SOL price data
-- `twitter_sentiment` - Crypto sentiment from Twitter
+### Full Schema
+See [data/pjx_database_schema.sql](data/pjx_database_schema.sql) for complete schema including views and functions.
 
-Create new tables in `data/` folder, then run:
+To recreate database:
 ```bash
-psql -h localhost -p 54594 -U postgres -d postgres -f data/new_table.sql
+psql -h localhost -p 54594 -U postgres -d postgres -f data/pjx_database_schema.sql
 ```
 
 ---
@@ -172,35 +373,23 @@ python orchestrator.py
 # Check outputs/ and logs/ folders
 ```
 
----
 
-## Guidelines for Claude Code
+## Project Status & Goals
 
-### DO:
-- ✅ Ask before creating multiple files
-- ✅ Build one component at a time
-- ✅ Use real data (no synthetic/fake data)
-- ✅ Keep code simple and readable
-- ✅ Update requirements.txt when adding packages
+### Current Work
+**Scaling Twitter Intelligence Across Crypto Market**
+- Production-ready scrapers: twitter_sentiment.py (general) + twitter_whales.py (38 accounts)
+- Now duplicating these working systems for different crypto sectors
+- Each duplicate: 5-10 tokens, same proven strategy (VADER + Yale + velocity)
+- All data → single twitter_sentiment table for unified analysis
 
-### DON'T:
-- ❌ Move files without asking
-- ❌ Build complex multi-agent systems
-- ❌ Use local LLMs (APIs are cheaper)
-- ❌ Create 5+ files at once
-- ❌ Build trading execution until data + AI validated
+### Project Goals
+1. **Learn by doing** - Build real systems with real data
+2. **Portfolio project** - Production-quality code and architecture
+3. **Real-world skills** - APIs, databases, scrapers, AI integration
+4. **Future profitability** - Target $500/month once AI decision layer is validated
 
----
-
-## Project Goal
-
-**Build a learning-first crypto trading system:**
-- Learn AI/data systems
-- Build portfolio project
-- Gain real-world skills
-- (Eventually) Target $500/month profit
-
-**Keep it simple. Build step-by-step. Test everything.**
+**Philosophy**: Keep it simple. Build step-by-step. Test everything. No premature optimization.
 
 
 ## API Models - What to Use Where
