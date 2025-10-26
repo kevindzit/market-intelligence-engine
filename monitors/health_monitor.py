@@ -95,10 +95,6 @@ Action: Check scraper logs and restart if needed
     def print_health_summary(self):
         """Print a simple health summary"""
         stats = self.get_stats()
-        status_emoji = "✓" if stats['health_status'] == 'HEALTHY' else "⚠"
+        status_emoji = "OK" if stats['health_status'] == 'HEALTHY' else "WARN"
 
-        print(f"\n[{status_emoji}] Health Status: {stats['health_status']}")
-        print(f"    Total cycles: {stats['total_cycles']}")
-        print(f"    Total tweets: {stats['total_tweets']}")
-        print(f"    Avg per cycle: {stats['avg_tweets_per_cycle']:.1f}")
-        print(f"    Empty cycles: {stats['consecutive_empty']}/{self.alert_threshold}")
+        print(f"\n[{status_emoji}] Health: {stats['health_status']} | Cycles: {stats['total_cycles']} | Tweets: {stats['total_tweets']} | Avg: {stats['avg_tweets_per_cycle']:.1f} | Empty: {stats['consecutive_empty']}/{self.alert_threshold}")

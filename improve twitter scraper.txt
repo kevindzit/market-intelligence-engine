@@ -3,7 +3,6 @@ Missing quote tweets with high engagement
 
 
 
-
-notes for today
-
-go through new twitter scrapers and check them one by one and improve both the best we can
+notes for tomorrow:
+check each individual twitter script and maek sure each works and check for improvments
+work on ratelimit thing im seeing
