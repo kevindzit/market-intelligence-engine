@@ -197,7 +197,7 @@ class WhaleTracker:
 
         return signal
 
-    async def get_whale_tweets(self, username, retry_count=0, max_retries=1):
+    async def get_whale_tweets(self, username):
         """Get recent tweets from a specific whale account"""
         collected = []
 
@@ -266,20 +266,10 @@ class WhaleTracker:
             await asyncio.sleep(wait_seconds)
         except Exception as e:
             error_msg = str(e).lower()
-            # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
+            # Check for authentication errors - raise to trigger global cookie refresh
             if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
-                print(f"    [WARN] Authentication error detected: {e}")
-                # Check if we've hit max retries
-                if retry_count >= max_retries:
-                    print(f"    [ERROR] Max retries ({max_retries}) reached for @{username}. Skipping...")
-                    return collected
-                # Try to refresh cookies
-                if auto_refresh_cookies(self.client):
-                    print(f"    [RETRY] Cookies refreshed, retrying @{username} (attempt {retry_count + 1}/{max_retries})...")
-                    return await self.get_whale_tweets(username, retry_count + 1, max_retries)
-                else:
-                    print(f"    [ERROR] Cookie refresh failed for @{username}")
-                    return collected
+                print(f"    [WARN] Authentication error for @{username}: {e}")
+                raise  # Raise to trigger global cookie refresh in main loop
             print(f"    [ERROR] Failed to fetch @{username}: {e}")
 
         return collected
@@ -406,9 +396,38 @@ class WhaleTracker:
 
         all_tweets = []
 
-        for username in WHALE_ACCOUNTS.keys():
-            tweets = await self.get_whale_tweets(username)
-            all_tweets.extend(tweets)
+        # Check whale accounts - retry up to 10 times with fresh cookies if auth fails
+        max_refresh_attempts = 10
+        for refresh_attempt in range(max_refresh_attempts):
+            try:
+                for username in WHALE_ACCOUNTS.keys():
+                    tweets = await self.get_whale_tweets(username)
+                    all_tweets.extend(tweets)
+                break  # Success - exit retry loop
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
+                    # Auth error - refresh cookies and retry
+                    print(f"\n[AUTH ERROR] Authentication failed (refresh cycle {refresh_attempt + 1}/{max_refresh_attempts})")
+                    print(f"[REFRESH] Getting fresh cookies and creating new client...")
+
+                    new_client = auto_refresh_cookies(self.client)
+                    if new_client:
+                        self.client = new_client
+                        all_tweets = []  # Clear any partial results
+                        print(f"[RETRY] Retrying all whale accounts with fresh client...")
+                        continue  # Retry the loop with new client
+                    else:
+                        print(f"[FATAL] Failed to extract cookies from Firefox. Skipping this cycle.")
+                        break
+                else:
+                    # Non-auth error - just log and continue
+                    print(f"[ERROR] Unexpected error: {e}")
+                    break
+        else:
+            # Loop completed without break = hit max attempts
+            print(f"[FATAL] Still failing after {max_refresh_attempts} refresh attempts. Skipping this cycle.")
 
         # Save tweets and track health
         saved = 0

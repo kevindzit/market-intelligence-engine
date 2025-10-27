@@ -172,14 +172,10 @@ class TwitterLargecaps:
             time.sleep(wait_seconds)
         except Exception as e:
             error_msg = str(e).lower()
+            # Check for authentication errors - raise to trigger global cookie refresh
             if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
-                print(f"[WARN] Authentication error detected: {e}")
-                if auto_refresh_cookies(self.client):
-                    print(f"[RETRY] Cookies refreshed successfully, retrying search for {token}...")
-                    return await self.get_tweets_for_token(token)
-                else:
-                    print(f"[FATAL] Cookie refresh failed after all attempts for {token}")
-                    raise Exception(f"Unable to refresh cookies after 10 attempts")
+                print(f"[WARN] Authentication error for {token}: {e}")
+                raise  # Raise to trigger global cookie refresh in main loop
             print(f"[ERROR] Failed to fetch {token}: {e}")
 
         return collected
@@ -321,9 +317,38 @@ class TwitterLargecaps:
 
         all_tweets = []
 
-        for token in TOKENS_TO_TRACK:
-            tweets = await self.get_tweets_for_token(token)
-            all_tweets.extend(tweets)
+        # Collect tweets - retry once with fresh cookies if auth fails
+        max_refresh_attempts = 10
+        for refresh_attempt in range(max_refresh_attempts):  #: original + 1 retry after cookie refresh
+            try:
+                for token in TOKENS_TO_TRACK:
+                    tweets = await self.get_tweets_for_token(token)
+                    all_tweets.extend(tweets)
+                break  # Success - exit retry loop
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
+                    # Auth error - refresh cookies and retry
+                    print(f"\n[AUTH ERROR] Authentication failed (refresh cycle {refresh_attempt + 1}/{max_refresh_attempts})")
+                    print(f"[REFRESH] Getting fresh cookies and creating new client...")
+
+                    new_client = auto_refresh_cookies(self.client)
+                    if new_client:
+                        self.client = new_client
+                        all_tweets = []  # Clear any partial results
+                        print(f"[RETRY] Retrying all tokens with fresh client...")
+                        continue  # Retry the loop with new client
+                    else:
+                        print(f"[FATAL] Failed to extract cookies from Firefox. Skipping this cycle.")
+                        break
+                else:
+                    # Non-auth error - just log and continue
+                    print(f"[ERROR] Unexpected error: {e}")
+                    break
+        else:
+            # Loop completed without break = hit max attempts
+            print(f"[FATAL] Still failing after {max_refresh_attempts} refresh attempts. Skipping this cycle.")
 
         saved = 0
         if all_tweets:

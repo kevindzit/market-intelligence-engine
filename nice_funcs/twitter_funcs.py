@@ -387,18 +387,15 @@ def init_twitter_client(cookies_path="cookies.json"):
         print(f"[ERROR] Twitter client init failed: {e}")
         sys.exit(1)
 
-def auto_refresh_cookies(client, cookies_path="cookies.json", max_attempts=10):
-    """Automatically refresh cookies when they expire - retries up to 10 times
+def auto_refresh_cookies(client, cookies_path="cookies.json"):
+    """Refresh cookies by extracting them from Firefox and creating a fresh client
 
-    IMPORTANT: Reinitializes the client after loading new cookies to clear any cached state.
-
-    Sometimes cookie refresh needs multiple attempts to get valid credentials.
-    This function will keep trying until it gets working cookies or hits max attempts.
+    IMPORTANT: Creates a completely new client instance to clear any cached state.
+    The calling code should handle retry logic if this fails.
 
     Args:
-        client: twikit Client instance (will be reinitialized)
+        client: twikit Client instance (will be replaced with fresh instance)
         cookies_path: Path to save refreshed cookies
-        max_attempts: Maximum refresh attempts (default 10)
 
     Returns:
         Client or None: New twikit Client with fresh cookies, or None if failed
@@ -406,37 +403,25 @@ def auto_refresh_cookies(client, cookies_path="cookies.json", max_attempts=10):
     import time
     from twikit import Client
 
-    print(f"\n[AUTO-REFRESH] Starting cookie refresh (up to {max_attempts} attempts)...")
+    try:
+        cookies = refresh_cookies(headless=False)
+        if cookies and save_cookies(cookies):
+            # CRITICAL: Create a completely new client instance to avoid cached state
+            print(f"[AUTO-REFRESH] ✓ Cookies saved, creating fresh client instance...")
+            new_client = Client('en-US')
+            new_client.load_cookies(cookies_path)
 
-    for attempt in range(1, max_attempts + 1):
-        print(f"[AUTO-REFRESH] Attempt {attempt}/{max_attempts}...")
+            # Wait a moment for session to stabilize
+            time.sleep(2)
 
-        try:
-            cookies = refresh_cookies(headless=False)
-            if cookies and save_cookies(cookies):
-                # CRITICAL: Create a completely new client instance to avoid cached state
-                print(f"[AUTO-REFRESH] ✓ Cookies saved, creating fresh client instance...")
-                new_client = Client('en-US')
-                new_client.load_cookies(cookies_path)
-
-                # Wait a moment for session to stabilize
-                time.sleep(2)
-
-                print(f"[AUTO-REFRESH] ✓ Success on attempt {attempt}! New client ready.")
-                return new_client
-            else:
-                print(f"[AUTO-REFRESH] ✗ Failed to extract/save cookies (attempt {attempt})")
-        except Exception as e:
-            print(f"[AUTO-REFRESH] ✗ Error on attempt {attempt}: {e}")
-
-        # Wait before retrying (except on last attempt)
-        if attempt < max_attempts:
-            wait_time = 3
-            print(f"[AUTO-REFRESH] Waiting {wait_time}s before retry...")
-            time.sleep(wait_time)
-
-    print(f"[AUTO-REFRESH] ✗ All {max_attempts} attempts failed - could not refresh cookies")
-    return None
+            print(f"[AUTO-REFRESH] ✓ New client created successfully!")
+            return new_client
+        else:
+            print(f"[AUTO-REFRESH] ✗ Failed to extract/save cookies")
+            return None
+    except Exception as e:
+        print(f"[AUTO-REFRESH] ✗ Error: {e}")
+        return None
 
 # ============================================================================
 # DATABASE HELPERS
