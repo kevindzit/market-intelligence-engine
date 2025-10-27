@@ -29,7 +29,19 @@
       "Bash(psql:*)",
       "Bash(mkdir:*)",
       "Bash(rm:*)",
-      "Bash(docker exec:*)"
+      "Bash(docker exec:*)",
+      "Bash(for file in crypto_scrapers/twitter_defi.py crypto_scrapers/twitter_layer1s.py crypto_scrapers/twitter_layer2s.py crypto_scrapers/twitter_ai.py)",
+      "Bash(do)",
+      "Bash(echo:*)",
+      "Bash(done)",
+      "Bash(timeout 30 python:*)",
+      "Bash(for file in crypto_scrapers/twitter_*.py)",
+      "Bash(git restore:*)",
+      "Bash(timeout 45 python:*)",
+      "Bash(for file in crypto_scrapers/twitter_memecoins.py crypto_scrapers/twitter_largecaps.py crypto_scrapers/twitter_defi.py crypto_scrapers/twitter_layer1s.py crypto_scrapers/twitter_layer2s.py crypto_scrapers/twitter_ai.py)",
+      "Bash(if python -m py_compile \"$file\")",
+      "Bash(then)",
+      "Bash(else)"
     ],
     "deny": [],
     "ask": []

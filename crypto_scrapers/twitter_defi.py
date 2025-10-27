@@ -28,6 +28,9 @@ from nice_funcs.twitter_funcs import (
     calculate_influence_weight,
     detect_pump_pattern,
     analyze_sentiment,
+    calculate_volume_spike,
+    calculate_token_velocity_metrics,
+    update_token_sentiment_history,
     SPAM_KEYWORDS
 )
 
@@ -105,61 +108,8 @@ class TwitterDefi:
         """Initialize VADER with crypto lexicon"""
         self.vader = init_vader_with_crypto_lexicon()
 
-    def calculate_volume_spike(self, token, current_count):
-        """Calculate if there's a volume spike (PRIMARY SIGNAL)"""
-        baseline = float(self.volume_baseline[token]['count'] or 20.0)
-        current = float(current_count)
-        spike_ratio = current / (baseline + 1.0)
 
-        # Update baseline with exponential moving average
-        alpha = 0.1  # Smoothing factor
-        self.volume_baseline[token]['count'] = (
-            alpha * current + (1.0 - alpha) * baseline
-        )
 
-        return spike_ratio
-
-    def calculate_velocity_metrics(self, token, current_sentiment, current_volume_spike):
-        """Calculate sentiment velocity and volume acceleration"""
-        history = self.sentiment_history[token]
-
-        # Need at least one previous cycle to calculate velocity
-        if not history:
-            return None
-
-        prev_cycle = history[-1]
-        time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0  # Minutes
-
-        if time_delta < 1:  # Avoid division by very small numbers
-            return None
-
-        # Calculate rates of change per minute
-        sentiment_velocity = (current_sentiment - prev_cycle['sentiment']) / time_delta
-        volume_acceleration = (current_volume_spike - prev_cycle['volume_spike']) / time_delta
-
-        # Momentum score: both metrics moving up together
-        momentum = sentiment_velocity * volume_acceleration
-
-        return {
-            'sentiment_velocity': sentiment_velocity,
-            'volume_acceleration': volume_acceleration,
-            'momentum': momentum,
-            'prev_sentiment': prev_cycle['sentiment'],
-            'prev_volume_spike': prev_cycle['volume_spike'],
-            'time_delta': time_delta
-        }
-
-    def update_sentiment_history(self, token, sentiment, volume_spike):
-        """Store current cycle data and trim to last 3 cycles"""
-        self.sentiment_history[token].append({
-            'time': datetime.now(),
-            'sentiment': sentiment,
-            'volume_spike': volume_spike
-        })
-
-        # Keep only last 3 cycles
-        if len(self.sentiment_history[token]) > 3:
-            self.sentiment_history[token] = self.sentiment_history[token][-3:]
 
     def init_twitter_client(self):
         """Initialize twikit client"""
@@ -229,13 +179,7 @@ class TwitterDefi:
             # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
             if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                 print(f"[WARN] Authentication error detected: {e}")
-                # auto_refresh_cookies now retries up to 10 times internally
-                if auto_refresh_cookies(self.client):
-                    print(f"[RETRY] Cookies refreshed successfully, retrying search for {token}...")
-                    return await self.get_tweets_for_token(token)
-                else:
-                    print(f"[FATAL] Cookie refresh failed after all attempts for {token}")
-                    raise Exception(f"Unable to refresh cookies after 10 attempts")
+                raise  # Raise to trigger global cookie refresh in main loop
             print(f"[ERROR] Failed to fetch {token}: {e}")
 
         return collected
@@ -257,7 +201,7 @@ class TwitterDefi:
 
         for token, tweets in by_token.items():
             # Calculate volume spike (PRIMARY SIGNAL)
-            volume_spike = self.calculate_volume_spike(token, len(tweets))
+            volume_spike = calculate_volume_spike(self.volume_baseline, token, len(tweets))
 
             if volume_spike >= 2.0:  # 2x baseline = strong signal
                 volume_alerts.append((token, volume_spike, len(tweets)))
@@ -267,7 +211,7 @@ class TwitterDefi:
             avg_sentiment = sum(sentiments) / len(sentiments) if sentiments else 0
 
             # Calculate velocity metrics
-            velocity_metrics = self.calculate_velocity_metrics(token, avg_sentiment, volume_spike)
+            velocity_metrics = calculate_token_velocity_metrics(self.sentiment_history, token, avg_sentiment, volume_spike)
             if velocity_metrics:
                 sentiment_velocity = velocity_metrics['sentiment_velocity']
                 volume_acceleration = velocity_metrics['volume_acceleration']
@@ -278,7 +222,7 @@ class TwitterDefi:
                 momentum_score = None
 
             # Update history for next cycle
-            self.update_sentiment_history(token, avg_sentiment, volume_spike)
+            update_token_sentiment_history(self.sentiment_history, token, avg_sentiment, volume_spike)
 
             # Detect pump patterns
             pump_score = detect_pump_pattern(tweets, SPAM_KEYWORDS)
@@ -322,10 +266,10 @@ class TwitterDefi:
                          author_username, author_followers, retweet_count, like_count,
                          reply_count, quote_count,
                          tweet_created_at, scraped_at, weighted_score, alert_level,
-                         is_whale, volume_spike, bot_probability, pump_score, source,
+                         is_whale, volume_spike, bot_probability, pump_score, influence_weight, source,
                          verified, has_urls, hashtag_count, following_count,
                          sentiment_velocity, volume_acceleration, momentum_score)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tweet_id, token) DO NOTHING
                     """, (
                         tweet['tweet_id'],
@@ -347,6 +291,7 @@ class TwitterDefi:
                         round(volume_spike, 2),
                         round(bot_prob, 3),
                         round(pump_score, 3) if pump_score > 0.5 else None,
+                        round(influence_weight, 4),
                         'defi',  # Source identifier for DeFi protocol searches
                         tweet.get('verified', False),
                         tweet.get('has_urls', False),
@@ -387,10 +332,35 @@ class TwitterDefi:
 
         all_tweets = []
 
-        # Collect DeFi tweets
-        for token in TOKENS_TO_TRACK:
-            tweets = await self.get_tweets_for_token(token)
-            all_tweets.extend(tweets)
+        # Collect tweets - retry once with fresh cookies if auth fails
+        for attempt in range(2):  # Max 2 attempts: original + 1 retry after cookie refresh
+            try:
+                for token in TOKENS_TO_TRACK:
+                    tweets = await self.get_tweets_for_token(token)
+                    all_tweets.extend(tweets)
+                break  # Success - exit retry loop
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
+                    if attempt == 0:  # First attempt failed
+                        print(f"\n[AUTH ERROR] Authentication failed. Refreshing cookies...")
+                        new_client = auto_refresh_cookies(self.client)
+                        if new_client:
+                            self.client = new_client
+                            print(f"[RETRY] Retrying all tokens with fresh client...")
+                            all_tweets = []  # Clear any partial results
+                            continue  # Retry the loop
+                        else:
+                            print(f"[FATAL] Cookie refresh failed after 10 attempts. Skipping this cycle.")
+                            break
+                    else:  # Second attempt also failed
+                        print(f"[FATAL] Still failing after cookie refresh. Skipping this cycle.")
+                        break
+                else:
+                    # Non-auth error - just log and continue
+                    print(f"[ERROR] Unexpected error: {e}")
+                    break
 
         # Save tweets and track health
         saved = 0
@@ -429,7 +399,7 @@ class TwitterDefi:
                 baseline = float(self.volume_baseline[token]['count'] or 20.0)
                 volume_spike = float(count) / (baseline + 1.0)
 
-                velocity = self.calculate_velocity_metrics(token, avg_sent, volume_spike)
+                velocity = calculate_token_velocity_metrics(self.sentiment_history, token, avg_sent, volume_spike)
 
                 if velocity:
                     # Check for significant momentum
@@ -442,7 +412,7 @@ class TwitterDefi:
                         })
 
                 # Update history for next cycle
-                self.update_sentiment_history(token, avg_sent, volume_spike)
+                update_token_sentiment_history(self.sentiment_history, token, avg_sent, volume_spike)
 
         else:
             print("\nNo tweets collected this cycle.")

@@ -390,18 +390,21 @@ def init_twitter_client(cookies_path="cookies.json"):
 def auto_refresh_cookies(client, cookies_path="cookies.json", max_attempts=10):
     """Automatically refresh cookies when they expire - retries up to 10 times
 
+    IMPORTANT: Reinitializes the client after loading new cookies to clear any cached state.
+
     Sometimes cookie refresh needs multiple attempts to get valid credentials.
     This function will keep trying until it gets working cookies or hits max attempts.
 
     Args:
-        client: twikit Client instance
+        client: twikit Client instance (will be reinitialized)
         cookies_path: Path to save refreshed cookies
         max_attempts: Maximum refresh attempts (default 10)
 
     Returns:
-        bool: True if refresh successful, False if all attempts failed
+        Client or None: New twikit Client with fresh cookies, or None if failed
     """
     import time
+    from twikit import Client
 
     print(f"\n[AUTO-REFRESH] Starting cookie refresh (up to {max_attempts} attempts)...")
 
@@ -411,9 +414,16 @@ def auto_refresh_cookies(client, cookies_path="cookies.json", max_attempts=10):
         try:
             cookies = refresh_cookies(headless=False)
             if cookies and save_cookies(cookies):
-                client.load_cookies(cookies_path)
-                print(f"[AUTO-REFRESH] ✓ Success on attempt {attempt}! Cookies refreshed and loaded.")
-                return True
+                # CRITICAL: Create a completely new client instance to avoid cached state
+                print(f"[AUTO-REFRESH] ✓ Cookies saved, creating fresh client instance...")
+                new_client = Client('en-US')
+                new_client.load_cookies(cookies_path)
+
+                # Wait a moment for session to stabilize
+                time.sleep(2)
+
+                print(f"[AUTO-REFRESH] ✓ Success on attempt {attempt}! New client ready.")
+                return new_client
             else:
                 print(f"[AUTO-REFRESH] ✗ Failed to extract/save cookies (attempt {attempt})")
         except Exception as e:
@@ -421,12 +431,12 @@ def auto_refresh_cookies(client, cookies_path="cookies.json", max_attempts=10):
 
         # Wait before retrying (except on last attempt)
         if attempt < max_attempts:
-            wait_time = 2
+            wait_time = 3
             print(f"[AUTO-REFRESH] Waiting {wait_time}s before retry...")
             time.sleep(wait_time)
 
     print(f"[AUTO-REFRESH] ✗ All {max_attempts} attempts failed - could not refresh cookies")
-    return False
+    return None
 
 # ============================================================================
 # DATABASE HELPERS
@@ -463,53 +473,177 @@ def get_db_connection(host, port, database, user, password):
         sys.exit(1)
 
 # ============================================================================
+# VOLUME SPIKE CALCULATION
+# ============================================================================
+
+def calculate_volume_spike(volume_baseline_dict, token, current_count):
+    """Calculate if there's a volume spike (PRIMARY SIGNAL)
+
+    Updates baseline with exponential moving average and returns spike ratio.
+    Used by token-based scrapers to detect unusual tweet volume.
+
+    Args:
+        volume_baseline_dict: Dict with token baselines, e.g. {'BTC': {'count': 20.0}}
+        token: Token symbol (e.g., 'BTC', 'PEPE')
+        current_count: Current tweet count for this cycle
+
+    Returns:
+        float: Spike ratio (e.g., 2.5 = 2.5x normal volume)
+    """
+    baseline = float(volume_baseline_dict[token]['count'] or 20.0)
+    current = float(current_count)
+    spike_ratio = current / (baseline + 1.0)
+
+    # Update baseline with exponential moving average
+    alpha = 0.1  # Smoothing factor
+    volume_baseline_dict[token]['count'] = (
+        alpha * current + (1.0 - alpha) * baseline
+    )
+
+    return spike_ratio
+
+# ============================================================================
 # VELOCITY TRACKING
 # ============================================================================
 
-def calculate_velocity_metrics(history_list, current_value, metric_key):
-    """Calculate velocity (rate of change per minute) for a metric
+def calculate_token_velocity_metrics(sentiment_history_dict, token, current_sentiment, current_volume_spike):
+    """Calculate sentiment velocity and volume acceleration for token-based scrapers
+
+    Measures rate of change per minute for sentiment and volume.
+    Used to detect rapid momentum shifts 10-15 minutes earlier than traditional signals.
 
     Args:
-        history_list: List of dicts with 'time' and metric_key keys
-        current_value: Current metric value
-        metric_key: Key name in history dict to track
+        sentiment_history_dict: Dict storing last 3 cycles per token
+        token: Token symbol
+        current_sentiment: Current average sentiment score
+        current_volume_spike: Current volume spike ratio
 
     Returns:
-        dict or None: {'velocity': float, 'prev_value': float, 'time_delta': float}
+        dict or None: {
+            'sentiment_velocity': float,  # Change in sentiment per minute
+            'volume_acceleration': float, # Change in volume spike per minute
+            'momentum': float,            # sentiment_velocity × volume_acceleration
+            'prev_sentiment': float,
+            'prev_volume_spike': float,
+            'time_delta': float
+        }
     """
-    if not history_list:
+    history = sentiment_history_dict[token]
+
+    # Need at least one previous cycle to calculate velocity
+    if not history:
         return None
 
-    prev_cycle = history_list[-1]
+    prev_cycle = history[-1]
+    time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0  # Minutes
+
+    if time_delta < 1:  # Avoid division by very small numbers
+        return None
+
+    # Calculate rates of change per minute
+    sentiment_velocity = (current_sentiment - prev_cycle['sentiment']) / time_delta
+    volume_acceleration = (current_volume_spike - prev_cycle['volume_spike']) / time_delta
+
+    # Momentum score: both metrics moving up together
+    momentum = sentiment_velocity * volume_acceleration
+
+    return {
+        'sentiment_velocity': sentiment_velocity,
+        'volume_acceleration': volume_acceleration,
+        'momentum': momentum,
+        'prev_sentiment': prev_cycle['sentiment'],
+        'prev_volume_spike': prev_cycle['volume_spike'],
+        'time_delta': time_delta
+    }
+
+def calculate_whale_velocity_metrics(sentiment_history_dict, token, current_sentiment, current_tweet_count):
+    """Calculate sentiment velocity for whale account tracking
+
+    Similar to token velocity but tracks tweet count instead of volume spike ratio.
+
+    Args:
+        sentiment_history_dict: Dict storing last 3 cycles per token
+        token: Token symbol
+        current_sentiment: Current average sentiment from whale tweets
+        current_tweet_count: Number of whale tweets mentioning this token
+
+    Returns:
+        dict or None: {
+            'sentiment_velocity': float,
+            'volume_change': float,
+            'momentum': float,
+            'prev_sentiment': float,
+            'prev_tweet_count': int,
+            'time_delta': float
+        }
+    """
+    history = sentiment_history_dict[token]
+
+    if not history:
+        return None
+
+    prev_cycle = history[-1]
     time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0
 
     if time_delta < 1:
         return None
 
-    velocity = (current_value - prev_cycle[metric_key]) / time_delta
+    # Calculate rates of change per minute
+    sentiment_velocity = (current_sentiment - prev_cycle['sentiment']) / time_delta
+    volume_change = (current_tweet_count - prev_cycle['tweet_count']) / time_delta
+
+    # Momentum score: both metrics moving up together
+    momentum = sentiment_velocity * volume_change
 
     return {
-        'velocity': velocity,
-        'prev_value': prev_cycle[metric_key],
+        'sentiment_velocity': sentiment_velocity,
+        'volume_change': volume_change,
+        'momentum': momentum,
+        'prev_sentiment': prev_cycle['sentiment'],
+        'prev_tweet_count': prev_cycle['tweet_count'],
         'time_delta': time_delta
     }
 
-def update_sentiment_history(history_dict, token, **kwargs):
-    """Update sentiment history for velocity tracking
+def update_token_sentiment_history(sentiment_history_dict, token, sentiment, volume_spike):
+    """Store current cycle data for token-based velocity tracking
 
     Args:
-        history_dict: defaultdict(list) storing history per token
+        sentiment_history_dict: defaultdict(list) storing history per token
         token: Token symbol
-        **kwargs: Metric values to store (e.g., sentiment=0.5, volume_spike=2.3)
+        sentiment: Current average sentiment
+        volume_spike: Current volume spike ratio
 
     Returns:
-        None (modifies history_dict in place)
+        None (modifies sentiment_history_dict in place)
     """
-    entry = {'time': datetime.now()}
-    entry.update(kwargs)
-
-    history_dict[token].append(entry)
+    sentiment_history_dict[token].append({
+        'time': datetime.now(),
+        'sentiment': sentiment,
+        'volume_spike': volume_spike
+    })
 
     # Keep only last 3 cycles
-    if len(history_dict[token]) > 3:
-        history_dict[token] = history_dict[token][-3:]
+    if len(sentiment_history_dict[token]) > 3:
+        sentiment_history_dict[token] = sentiment_history_dict[token][-3:]
+
+def update_whale_sentiment_history(sentiment_history_dict, token, sentiment, tweet_count):
+    """Store current cycle data for whale velocity tracking
+
+    Args:
+        sentiment_history_dict: defaultdict(list) storing history per token
+        token: Token symbol
+        sentiment: Current average sentiment from whale tweets
+        tweet_count: Number of whale tweets mentioning token
+
+    Returns:
+        None (modifies sentiment_history_dict in place)
+    """
+    sentiment_history_dict[token].append({
+        'time': datetime.now(),
+        'sentiment': sentiment,
+        'tweet_count': tweet_count
+    })
+
+    # Keep only last 3 cycles
+    if len(sentiment_history_dict[token]) > 3:
+        sentiment_history_dict[token] = sentiment_history_dict[token][-3:]

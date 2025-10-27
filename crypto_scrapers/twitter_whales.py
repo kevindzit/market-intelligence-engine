@@ -25,7 +25,9 @@ from nice_funcs.twitter_funcs import (
     auto_refresh_cookies,
     get_db_connection,
     calculate_influence_weight,
-    analyze_sentiment
+    analyze_sentiment,
+    calculate_whale_velocity_metrics,
+    update_whale_sentiment_history
 )
 
 # Setup httpx patching before importing twikit
@@ -195,49 +197,7 @@ class WhaleTracker:
 
         return signal
 
-    def calculate_velocity_metrics(self, token, current_sentiment, current_tweet_count):
-        """Calculate sentiment velocity for whale tweets"""
-        history = self.sentiment_history[token]
-
-        # Need at least one previous cycle to calculate velocity
-        if not history:
-            return None
-
-        prev_cycle = history[-1]
-        time_delta = (datetime.now() - prev_cycle['time']).total_seconds() / 60.0  # Minutes
-
-        if time_delta < 1:  # Avoid division by very small numbers
-            return None
-
-        # Calculate rates of change per minute
-        sentiment_velocity = (current_sentiment - prev_cycle['sentiment']) / time_delta
-        volume_change = (current_tweet_count - prev_cycle['tweet_count']) / time_delta
-
-        # Momentum score: both metrics moving up together
-        momentum = sentiment_velocity * volume_change
-
-        return {
-            'sentiment_velocity': sentiment_velocity,
-            'volume_change': volume_change,
-            'momentum': momentum,
-            'prev_sentiment': prev_cycle['sentiment'],
-            'prev_tweet_count': prev_cycle['tweet_count'],
-            'time_delta': time_delta
-        }
-
-    def update_sentiment_history(self, token, sentiment, tweet_count):
-        """Store current cycle data and trim to last 3 cycles"""
-        self.sentiment_history[token].append({
-            'time': datetime.now(),
-            'sentiment': sentiment,
-            'tweet_count': tweet_count
-        })
-
-        # Keep only last 3 cycles
-        if len(self.sentiment_history[token]) > 3:
-            self.sentiment_history[token] = self.sentiment_history[token][-3:]
-
-    async def get_whale_tweets(self, username):
+    async def get_whale_tweets(self, username, retry_count=0, max_retries=1):
         """Get recent tweets from a specific whale account"""
         collected = []
 
@@ -309,13 +269,17 @@ class WhaleTracker:
             # Auto-refresh cookies on authentication errors (404, unauthorized, etc.)
             if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                 print(f"    [WARN] Authentication error detected: {e}")
-                # auto_refresh_cookies now retries up to 10 times internally
+                # Check if we've hit max retries
+                if retry_count >= max_retries:
+                    print(f"    [ERROR] Max retries ({max_retries}) reached for @{username}. Skipping...")
+                    return collected
+                # Try to refresh cookies
                 if auto_refresh_cookies(self.client):
-                    print(f"    [RETRY] Cookies refreshed successfully, retrying fetch for @{username}...")
-                    return await self.get_whale_tweets(username)
+                    print(f"    [RETRY] Cookies refreshed, retrying @{username} (attempt {retry_count + 1}/{max_retries})...")
+                    return await self.get_whale_tweets(username, retry_count + 1, max_retries)
                 else:
-                    print(f"    [FATAL] Cookie refresh failed after all attempts for @{username}")
-                    raise Exception(f"Unable to refresh cookies after 10 attempts")
+                    print(f"    [ERROR] Cookie refresh failed for @{username}")
+                    return collected
             print(f"    [ERROR] Failed to fetch @{username}: {e}")
 
         return collected
@@ -343,12 +307,12 @@ class WhaleTracker:
             # Calculate normalized engagement coefficient (0-1 scale)
             user_data = {'followers': tweet['followers']}
             engagement_data = {'likes': tweet.get('likes', 0), 'retweets': tweet.get('retweets', 0)}
-            engagement_weight = calculate_influence_weight(user_data, engagement_data, use_bot_penalty=False)
+            influence_weight = calculate_influence_weight(user_data, engagement_data, use_bot_penalty=False)
 
             # Weighted score using Yale engagement coefficient
-            # engagement_weight (0-1) × 100 to maintain alert threshold compatibility
+            # influence_weight (0-1) × 100 to maintain alert threshold compatibility
             # Replaces follower^0.5 with research-backed engagement normalization
-            weighted_score = sentiment * signal_strength * (engagement_weight * 100)
+            weighted_score = sentiment * signal_strength * (influence_weight * 100)
 
             # Determine alert level - whales get boosted alerts
             if signal_strength >= 2.0 and abs(sentiment) > 0.3:
@@ -380,9 +344,10 @@ class WhaleTracker:
                          author_username, author_followers, retweet_count, like_count,
                          reply_count, quote_count,
                          tweet_created_at, scraped_at, weighted_score, alert_level,
-                         is_whale, source,
-                         verified, has_urls, hashtag_count, following_count)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         is_whale, volume_spike, bot_probability, pump_score, influence_weight, source,
+                         verified, has_urls, hashtag_count, following_count,
+                         sentiment_velocity, volume_acceleration, momentum_score)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (tweet_id, token) DO NOTHING
                     """, (
                         tweet['tweet_id'],
@@ -401,11 +366,18 @@ class WhaleTracker:
                         round(weighted_score, 4),
                         alert_level,
                         True,  # All whale watchlist accounts are considered whales
+                        None,  # volume_spike - N/A for account-based tracking
+                        None,  # bot_probability - whales are pre-vetted
+                        None,  # pump_score - whales are trusted sources
+                        round(influence_weight, 4),
                         'whale_tracker',  # Source identifier
                         tweet.get('verified', False),
                         tweet.get('has_urls', False),
                         tweet.get('hashtag_count', 0),
-                        tweet.get('following', 0)
+                        tweet.get('following', 0),
+                        None,  # sentiment_velocity - calculated per token, not per tweet
+                        None,  # volume_acceleration - N/A for account-based
+                        None   # momentum_score - N/A for account-based
                     ))
 
                     if cursor.rowcount > 0:
@@ -468,7 +440,7 @@ class WhaleTracker:
                 tweet_count = len(tweets)
 
                 # Calculate velocity
-                velocity = self.calculate_velocity_metrics(token, avg_sentiment, tweet_count)
+                velocity = calculate_whale_velocity_metrics(self.sentiment_history, token, avg_sentiment, tweet_count)
 
                 if velocity:
                     # Check for significant whale momentum (lower threshold since whales are high-signal)
@@ -482,7 +454,7 @@ class WhaleTracker:
                         })
 
                 # Update history
-                self.update_sentiment_history(token, avg_sentiment, tweet_count)
+                update_whale_sentiment_history(self.sentiment_history, token, avg_sentiment, tweet_count)
 
         # Print momentum alerts (whale signals are especially important!)
         if momentum_alerts:
