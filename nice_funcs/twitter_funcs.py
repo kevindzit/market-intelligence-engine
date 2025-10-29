@@ -347,7 +347,7 @@ def detect_pump_pattern(tweets_batch, spam_keywords=SPAM_KEYWORDS):
 # TWITTER CLIENT INITIALIZATION
 # ============================================================================
 
-def init_twitter_client(cookies_path="cookies.json"):
+def init_twitter_client(cookies_path="cookies/cookies.json"):
     """Initialize twikit client with cookies
 
     Args:
@@ -387,15 +387,15 @@ def init_twitter_client(cookies_path="cookies.json"):
         print(f"[ERROR] Twitter client init failed: {e}")
         sys.exit(1)
 
-def auto_refresh_cookies(client, cookies_path="cookies.json"):
+def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
     """Refresh cookies by extracting them from Firefox and creating a fresh client
 
-    IMPORTANT: Creates a completely new client instance to clear any cached state.
-    The calling code should handle retry logic if this fails.
+    IMPORTANT: If using account pool, automatically detects which account and refreshes
+    the correct account's cookies. Falls back to single-account mode if pool not available.
 
     Args:
         client: twikit Client instance (will be replaced with fresh instance)
-        cookies_path: Path to save refreshed cookies
+        cookies_path: Path to save refreshed cookies (only used in single-account mode)
 
     Returns:
         Client or None: New twikit Client with fresh cookies, or None if failed
@@ -403,6 +403,40 @@ def auto_refresh_cookies(client, cookies_path="cookies.json"):
     import time
     from twikit import Client
 
+    # Check if this client is from the account pool
+    try:
+        from nice_funcs.twitter_account_pool import account_pool
+
+        account_num = account_pool.get_account_num(client)
+
+        if account_num is not None:
+            # This is a pooled account - refresh it properly
+            print(f"[AUTO-REFRESH] Detected Account {account_num} needs refresh")
+            print(f"[AUTO-REFRESH] Please ensure Account {account_num} is logged into Firefox")
+            print(f"[AUTO-REFRESH] Extracting fresh cookies...")
+
+            success = account_pool.refresh_account(account_num)
+
+            if success:
+                # Get the refreshed client from the pool
+                for acc in account_pool.clients:
+                    if acc['account_num'] == account_num:
+                        print(f"[AUTO-REFRESH] ✓ Account {account_num} refreshed successfully!")
+                        return acc['client']
+            else:
+                print(f"[AUTO-REFRESH] ✗ Failed to refresh Account {account_num}")
+                print(f"[AUTO-REFRESH] ✗ Make sure Account {account_num} is logged into Firefox")
+                print(f"[AUTO-REFRESH] ✗ Or manually run: python scripts/setup_account_cookies.py --account {account_num}")
+                return None
+
+    except ImportError:
+        # Account pool not available - use single-account mode
+        pass
+    except Exception as e:
+        print(f"[AUTO-REFRESH] Pool check failed: {e}, falling back to single-account mode")
+
+    # Single-account mode (fallback)
+    print(f"[AUTO-REFRESH] Using single-account mode")
     try:
         cookies = refresh_cookies(headless=False)
         if cookies and save_cookies(cookies):
@@ -422,6 +456,34 @@ def auto_refresh_cookies(client, cookies_path="cookies.json"):
     except Exception as e:
         print(f"[AUTO-REFRESH] ✗ Error: {e}")
         return None
+
+def get_pooled_client():
+    """Get a Twitter client from the account pool (with fallback to single account)
+
+    This function tries to use the multi-account pool for rate limit avoidance.
+    If the pool is not available, it falls back to single-account mode.
+
+    Returns:
+        Client: TwiKit Client instance
+    """
+    try:
+        from nice_funcs.twitter_account_pool import account_pool
+
+        # Try to get client from pool
+        client = account_pool.get_client()
+
+        if client:
+            return client
+
+        # Pool returned None - fall back to single account
+        print("[Client Init] Pool unavailable, using single-account mode")
+        return init_twitter_client()
+
+    except Exception as e:
+        # Account pool not available or failed - use single account
+        print(f"[Client Init] Account pool not available: {e}")
+        print("[Client Init] Using single-account mode")
+        return init_twitter_client()
 
 # ============================================================================
 # DATABASE HELPERS

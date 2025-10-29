@@ -1,6 +1,5 @@
 # Database packages
 psycopg2-binary>=2.9.9
-chromadb>=0.4.0
 
 # Web scraping packages
 selenium>=4.15.0

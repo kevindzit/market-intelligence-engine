@@ -21,7 +21,7 @@ from monitors.health_monitor import HealthMonitor
 from nice_funcs.twitter_funcs import (
     setup_httpx_patching,
     init_vader_with_crypto_lexicon,
-    init_twitter_client,
+    get_pooled_client,
     auto_refresh_cookies,
     get_db_connection,
     calculate_bot_probability,
@@ -112,8 +112,8 @@ class TwitterLayer1s:
 
 
     def init_twitter_client(self):
-        """Initialize twikit client"""
-        self.client = init_twitter_client()
+        """Initialize twikit client from account pool"""
+        self.client = get_pooled_client()
 
     async def get_tweets_for_token(self, token):
         """Fetch tweets for a token with enhanced data"""

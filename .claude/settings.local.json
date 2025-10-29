@@ -41,7 +41,11 @@
       "Bash(for file in crypto_scrapers/twitter_memecoins.py crypto_scrapers/twitter_largecaps.py crypto_scrapers/twitter_defi.py crypto_scrapers/twitter_layer1s.py crypto_scrapers/twitter_layer2s.py crypto_scrapers/twitter_ai.py)",
       "Bash(if python -m py_compile \"$file\")",
       "Bash(then)",
-      "Bash(else)"
+      "Bash(else)",
+      "Bash(do echo \"Checking $file...\")",
+      "Bash(timeout 60 python setup_account_cookies.py:*)",
+      "Bash(timeout 90 python:*)",
+      "Bash(timeout 120 python:*)"
     ],
     "deny": [],
     "ask": []

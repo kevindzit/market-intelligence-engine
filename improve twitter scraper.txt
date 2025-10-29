@@ -1,8 +1,0 @@
-No monitoring of reply chains between whales
-Missing quote tweets with high engagement
-
-
-
-notes for tomorrow:
-check each individual twitter script and maek sure each works and check for improvments
-work on ratelimit thing im seeing

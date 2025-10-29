@@ -1,28 +1,36 @@
+"""
+RSS Aggregator - PostgreSQL Version
+Fetches RSS feeds and stores in PostgreSQL (replaces ChromaDB)
+"""
+
 import feedparser
-import chromadb
+import psycopg2
 import schedule
 import time
 import logging
+import os
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
-# --- Configuration ---
-CHROMA_PATH = "chroma_db_news"
-COLLECTION_NAME = "news_articles"
+load_dotenv()
 
-# RSS Feed Sources (All Free & Unlimited)
+# PostgreSQL config
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '54594')
+DB_NAME = os.getenv('DB_NAME', 'postgres')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
+
+# RSS Feeds (same as before)
 RSS_FEEDS = {
-    # Working feeds - verified 2025
     "MarketWatch": "https://www.marketwatch.com/rss/topstories",
     "MarketWatch_Markets": "https://www.marketwatch.com/rss/marketpulse",
     "CNBC_Top": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "CNBC_Markets": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
     "Benzinga": "https://www.benzinga.com/feed",
-    "Investing_Stocks": "https://www.investing.com/rss/news_25.rss",  # Stock market
-    "Investing_Economy": "https://www.investing.com/rss/news_14.rss",  # Economy news
-    "Investing_Crypto": "https://www.investing.com/rss/news_301.rss",  # Crypto (diversification)
-
-    # Note: Reuters killed official RSS in 2020, Nasdaq has connection issues
-    # Using Google News as Reuters workaround
+    "Investing_Stocks": "https://www.investing.com/rss/news_25.rss",
+    "Investing_Economy": "https://www.investing.com/rss/news_14.rss",
+    "Investing_Crypto": "https://www.investing.com/rss/news_301.rss",
     "Reuters_via_Google": "https://news.google.com/rss/search?q=when:24h+allinurl:reuters.com&ceid=US:en&hl=en-US&gl=US",
 }
 
@@ -30,24 +38,22 @@ def setup_logging():
     """Sets up logging configuration."""
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        filename='logs/rss_aggregator.log',
-        filemode='a'  # Append mode
+        format='%(asctime)s - %(levelname)s - %(message)s'
     )
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    console.setFormatter(formatter)
-    logging.getLogger('').addHandler(console)
 
-def get_chroma_collection():
-    """Initializes and returns the ChromaDB collection."""
+def get_db_connection():
+    """Get PostgreSQL connection"""
     try:
-        client = chromadb.PersistentClient(path=CHROMA_PATH)
-        collection = client.get_or_create_collection(name=COLLECTION_NAME)
-        return collection
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD
+        )
+        return conn
     except Exception as e:
-        logging.error(f"ChromaDB initialization error: {e}")
+        logging.error(f"Database connection failed: {e}")
         return None
 
 def fetch_rss_feed(feed_name, feed_url):
@@ -55,11 +61,10 @@ def fetch_rss_feed(feed_name, feed_url):
     try:
         logging.info(f"Fetching {feed_name}...")
 
-        # Set user-agent and timeout for better compatibility
         feed = feedparser.parse(
             feed_url,
             agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            request_headers={'Connection': 'close'}  # Prevent hanging connections
+            request_headers={'Connection': 'close'}
         )
 
         if feed.bozo:
@@ -67,30 +72,26 @@ def fetch_rss_feed(feed_name, feed_url):
 
         articles = []
         for entry in feed.entries:
-            # Extract article details
             title = entry.get('title', 'No Title')
-            url = entry.get('link', 'No URL')
+            url = entry.get('link', '')
+            description = entry.get('summary', entry.get('description', 'No description'))
 
-            # Get description/summary
-            description = entry.get('summary', entry.get('description', 'No description available'))
-
-            # Get published date
-            published = entry.get('published', entry.get('updated', None))
-            if published:
+            # Parse published date
+            published = None
+            if hasattr(entry, 'published_parsed') and entry.published_parsed:
                 try:
-                    # Try to parse the date
-                    published_dt = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                    published = published_dt.isoformat()
+                    published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
                 except:
-                    pass  # Keep original string if parsing fails
+                    pass
 
-            articles.append({
-                'title': title,
-                'url': url,
-                'description': description,
-                'published': published,
-                'source': feed_name
-            })
+            if url:  # Only add if URL exists
+                articles.append({
+                    'title': title,
+                    'url': url,
+                    'content': description,
+                    'published_at': published,
+                    'source': feed_name
+                })
 
         logging.info(f"{feed_name}: Found {len(articles)} articles")
         return articles
@@ -99,84 +100,73 @@ def fetch_rss_feed(feed_name, feed_url):
         logging.error(f"{feed_name}: Error fetching feed - {e}")
         return []
 
-def store_in_chromadb(collection, articles):
-    """Stores articles in ChromaDB with deduplication."""
-    if not collection or not articles:
+def store_articles(articles):
+    """Store articles in PostgreSQL"""
+    if not articles:
         return 0
 
-    new_articles = 0
-    skipped = 0
+    conn = get_db_connection()
+    if not conn:
+        return 0
 
-    for article in articles:
-        try:
-            url = article['url']
+    cursor = conn.cursor()
+    added_count = 0
 
-            # Check if article already exists (URL is the unique ID)
-            existing = collection.get(ids=[url])
-            if existing['ids']:
-                skipped += 1
-                continue
+    try:
+        for article in articles:
+            try:
+                cursor.execute("""
+                    INSERT INTO news_articles (title, content, url, source, published_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (url) DO NOTHING
+                """, (
+                    article['title'],
+                    article['content'],
+                    article['url'],
+                    article['source'],
+                    article['published_at']
+                ))
 
-            # Add new article
-            collection.add(
-                ids=[url],
-                documents=[article['description']],
-                metadatas=[{
-                    'headline': article['title'],
-                    'url': url,
-                    'source': article['source'],
-                    'timestamp': article.get('published', 'Unknown'),
-                    'scraped_at': datetime.now(timezone.utc).isoformat()
-                }]
-            )
-            new_articles += 1
+                if cursor.rowcount > 0:
+                    added_count += 1
 
-        except Exception as e:
-            logging.error(f"Error storing article: {e}")
-            continue
+            except Exception as e:
+                logging.error(f"Error inserting article: {e}")
 
-    logging.info(f"Stored {new_articles} new articles, skipped {skipped} duplicates")
-    return new_articles
+        conn.commit()
 
-def run_aggregator():
-    """Main function to fetch all RSS feeds and store articles."""
-    logging.info("=== Starting RSS Aggregator Run ===")
+    except Exception as e:
+        logging.error(f"Database error: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
 
-    collection = get_chroma_collection()
-    if not collection:
-        logging.error("Failed to initialize ChromaDB. Exiting.")
-        return
+    return added_count
 
-    total_fetched = 0
-    total_stored = 0
+def fetch_all_feeds():
+    """Fetch all RSS feeds and store in PostgreSQL"""
+    logging.info("Starting RSS aggregation cycle...")
+    total_added = 0
 
-    # Fetch from all RSS feeds
     for feed_name, feed_url in RSS_FEEDS.items():
         articles = fetch_rss_feed(feed_name, feed_url)
-        total_fetched += len(articles)
+        added = store_articles(articles)
+        total_added += added
 
-        if articles:
-            stored = store_in_chromadb(collection, articles)
-            total_stored += stored
-
-        # Be polite - small delay between feeds
-        time.sleep(1)
-
-    logging.info(f"=== Run Complete: Fetched {total_fetched} articles, stored {total_stored} new ===")
-    logging.info(f"Total articles in database: {collection.count()}")
+    logging.info(f"Aggregation complete. Added {total_added} new articles total.")
 
 if __name__ == "__main__":
     setup_logging()
-    logging.info("--- RSS News Aggregator Started ---")
+    logging.info("--- Starting RSS Aggregator (PostgreSQL) ---")
 
     # Run once immediately
-    run_aggregator()
+    fetch_all_feeds()
 
-    # Schedule to run every 15 minutes (same as NewsAPI)
-    schedule.every(15).minutes.do(run_aggregator)
-    logging.info("Scheduled to run every 15 minutes")
+    # Schedule every 30 minutes
+    schedule.every(30).minutes.do(fetch_all_feeds)
+    logging.info("Scheduled RSS fetching every 30 minutes.")
 
-    # Keep running
     while True:
         schedule.run_pending()
         time.sleep(60)

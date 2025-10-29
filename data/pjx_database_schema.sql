@@ -235,6 +235,26 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- ============================================================================
+-- TABLE: news_articles
+-- Purpose: Stores news articles for AI trading decisions
+-- Scrapers: newsapi_reader.py, rss_aggregator.py
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS news_articles (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    content TEXT,
+    url TEXT UNIQUE NOT NULL,
+    source VARCHAR(100),
+    published_at TIMESTAMP WITH TIME ZONE,
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_news_published_at ON news_articles(published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_scraped_at ON news_articles(scraped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_news_source ON news_articles(source);
+
+-- ============================================================================
 -- COMPLETE SCHEMA LOADED
 -- ============================================================================
 -- Tables created:
@@ -243,6 +263,7 @@ $$ LANGUAGE plpgsql;
 --   - sec_filings (SEC EDGAR filings)
 --   - company_profiles (FMP fundamental data)
 --   - twitter_sentiment (Multi-scraper Twitter sentiment system)
+--   - news_articles (News for AI trading decisions)
 --
 -- Views created:
 --   - recent_volume_spikes (5-min volume tracking)

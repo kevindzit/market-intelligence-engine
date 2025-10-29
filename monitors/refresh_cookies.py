@@ -1,7 +1,7 @@
 """
-Automated Twitter Cookie Refresh using Firefox
-Uses your actual Firefox profile where you're already logged in
-Simple and reliable - no need to re-login
+Automated Twitter Cookie Refresh using Chrome (Undetected)
+Uses undetected-chromedriver to bypass Twitter's bot detection
+Supports automated login for all accounts
 """
 
 import json
@@ -9,16 +9,13 @@ import time
 import sys
 import os
 from pathlib import Path
-from selenium import webdriver
-from selenium.webdriver.firefox.service import Service as FirefoxService
-from selenium.webdriver.firefox.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from webdriver_manager.firefox import GeckoDriverManager
 
 # Path to cookies.json
-COOKIES_PATH = Path(__file__).parent.parent / "cookies.json"
+COOKIES_PATH = Path(__file__).parent.parent / "cookies" / "cookies.json"
 
 # Required cookies for twikit
 REQUIRED_COOKIES = [
@@ -36,62 +33,116 @@ REQUIRED_COOKIES = [
     '__cf_bm'
 ]
 
-def get_firefox_profile_path():
-    """Find the default Firefox profile path where user is logged in"""
-    if sys.platform == "win32":
-        # Windows path
-        firefox_profiles = Path(os.environ['APPDATA']) / "Mozilla" / "Firefox" / "Profiles"
-    else:
-        # Linux/Mac
-        firefox_profiles = Path.home() / ".mozilla" / "firefox"
-
-    if firefox_profiles.exists():
-        # Look for default profile (usually ends with .default-release)
-        for profile_dir in firefox_profiles.glob("*.default-release"):
-            return str(profile_dir)
-        # Fallback to any profile
-        for profile_dir in firefox_profiles.glob("*.default"):
-            return str(profile_dir)
-    return None
-
-def refresh_cookies(headless=False, use_existing_profile=True):
+def refresh_cookies(headless=False, account_email=None, account_password=None, account_username=None):
     """
-    Launch Firefox, navigate to X/Twitter, extract cookies
+    Launch Chrome with undetected-chromedriver, navigate to X/Twitter, extract cookies
 
     Args:
-        headless: Run Firefox in headless mode (default: False)
-        use_existing_profile: Use your logged-in Firefox profile (default: True)
+        headless: Run Chrome in headless mode (default: False)
+        account_email: Email for automated login (optional)
+        account_password: Password for automated login (optional)
 
     Returns:
         dict: Extracted cookies formatted for twikit
     """
-    print("[Cookie Refresh] Starting Firefox...")
+    print("[Cookie Refresh] Starting Chrome (undetected mode)...")
 
-    # Configure Firefox options
-    options = Options()
+    # Configure Chrome options
+    options = uc.ChromeOptions()
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_argument('--window-size=1024,768')
 
     if headless:
-        options.add_argument('--headless')
+        options.add_argument('--headless=new')
 
-    # Use existing Firefox profile where you're logged in
-    if use_existing_profile:
-        profile_path = get_firefox_profile_path()
-        if profile_path:
-            print(f"[Cookie Refresh] Using Firefox profile: {Path(profile_path).name}")
-            options.add_argument('-profile')
-            options.add_argument(profile_path)
-        else:
-            print("[WARN] Could not find Firefox profile, using fresh profile")
-
-    # Initialize Firefox driver
+    # Initialize undetected Chrome driver
     driver = None
     try:
-        service = FirefoxService(GeckoDriverManager().install())
-        driver = webdriver.Firefox(service=service, options=options)
-        driver.set_window_size(1024, 768)
+        # Use version 141 to match current Chrome installation
+        driver = uc.Chrome(options=options, version_main=141, use_subprocess=True)
 
-        print("[Cookie Refresh] Navigating to x.com...")
-        driver.get("https://x.com/home")
+        # Automated login if credentials provided
+        if account_email and account_password:
+            print("[Cookie Refresh] Performing automated login...")
+            driver.get("https://x.com/i/flow/login")
+            time.sleep(4)  # Wait for page to fully load
+
+            # Enter email/username
+            try:
+                print("[Cookie Refresh] Waiting for username field...")
+                username_input = WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[autocomplete="username"]'))
+                )
+                time.sleep(1)  # Human-like delay
+
+                # Type slowly like a human
+                for char in account_email:
+                    username_input.send_keys(char)
+                    time.sleep(0.1)
+
+                print(f"[Cookie Refresh] Entered email: {account_email}")
+                time.sleep(2)
+
+                # Click Next
+                print("[Cookie Refresh] Clicking Next...")
+                next_button = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, '//span[text()="Next"]'))
+                )
+                next_button.click()
+                time.sleep(3)
+
+                # Check for username verification challenge (bot detection)
+                if account_username:
+                    try:
+                        print("[Cookie Refresh] Checking for verification challenge...")
+                        verification_input = driver.find_element(By.CSS_SELECTOR, 'input[data-testid="ocfEnterTextTextInput"]')
+                        if verification_input:
+                            print("[Cookie Refresh] Verification challenge detected! Entering username...")
+                            for char in account_username:
+                                verification_input.send_keys(char)
+                                time.sleep(0.1)
+                            time.sleep(2)
+                            verify_button = driver.find_element(By.XPATH, '//span[text()="Next"]')
+                            verify_button.click()
+                            print("[Cookie Refresh] Username verification submitted")
+                            time.sleep(3)
+                    except:
+                        # No verification challenge, continue normally
+                        pass
+
+                # Enter password
+                print("[Cookie Refresh] Waiting for password field...")
+                password_input = WebDriverWait(driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="password"]'))
+                )
+                time.sleep(1)
+
+                # Type password slowly
+                for char in account_password:
+                    password_input.send_keys(char)
+                    time.sleep(0.1)
+
+                print("[Cookie Refresh] Entered password")
+                time.sleep(2)
+
+                # Click Login
+                print("[Cookie Refresh] Clicking Log in...")
+                login_button = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, '//span[text()="Log in"]'))
+                )
+                login_button.click()
+                print("[Cookie Refresh] Login submitted, waiting for redirect...")
+                time.sleep(8)  # Wait for login to complete
+
+            except Exception as e:
+                print(f"[Cookie Refresh] Login automation failed: {e}")
+                print("[Cookie Refresh] Waiting for manual login (30 seconds)...")
+                time.sleep(30)
+
+        else:
+            # No credentials - navigate to home (user must be logged in)
+            print("[Cookie Refresh] Navigating to x.com...")
+            driver.get("https://x.com/home")
 
         # Wait for page to load (look for the X logo or home timeline)
         print("[Cookie Refresh] Waiting for page to load...")
@@ -135,7 +186,7 @@ def refresh_cookies(headless=False, use_existing_profile=True):
 
     finally:
         if driver:
-            print("[Cookie Refresh] Closing Firefox...")
+            print("[Cookie Refresh] Closing Chrome...")
             driver.quit()
 
 def save_cookies(cookie_dict):
@@ -155,7 +206,7 @@ def save_cookies(cookie_dict):
 def main():
     """Main function for standalone execution"""
     print("="*60)
-    print("Twitter Cookie Refresh - Firefox Edition")
+    print("Twitter Cookie Refresh - Undetected Chrome")
     print("="*60)
 
     # Check if cookies.json exists (for backup)

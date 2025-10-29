@@ -1,63 +1,77 @@
+"""
+NewsAPI Reader - PostgreSQL Version
+Fetches business news and stores in PostgreSQL (replaces ChromaDB)
+Simple and matches style of other scrapers
+"""
+
 import requests
 import logging
 import schedule
 import time
 import os
-import chromadb
+import psycopg2
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-# --- Configuration ---
-# Now using environment variable for better security
+# Configuration (same as before)
 NEWSAPI_KEY = os.getenv('NEWS_API_KEY')
 NEWSAPI_ENDPOINT = f"https://newsapi.org/v2/top-headlines?country=us&category=business&apiKey={NEWSAPI_KEY}"
 
-# ChromaDB Setup (Assumes default local setup)
-CHROMA_PATH = "chroma_db_news" # Folder where ChromaDB will store data
-COLLECTION_NAME = "news_articles"
-# Ensure ChromaDB path exists
-os.makedirs(CHROMA_PATH, exist_ok=True)
-chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME)
-
-# Keep track of recently processed URLs in this run to avoid immediate duplicates
-processed_urls_this_run = set()
+# PostgreSQL config (same as your Twitter scrapers)
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '54594')
+DB_NAME = os.getenv('DB_NAME', 'postgres')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 
 def setup_logging():
     """Sets up basic logging to console."""
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    console.setFormatter(formatter)
-    root_logger = logging.getLogger('')
-    if root_logger.hasHandlers():
-        root_logger.handlers.clear()
-    root_logger.addHandler(console)
+
+def get_db_connection():
+    """Get PostgreSQL connection (same as twitter scrapers)"""
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            database=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD
+        )
+        return conn
+    except Exception as e:
+        logging.error(f"Database connection failed: {e}")
+        return None
 
 def parse_iso_datetime(date_string):
-    """Safely parses ISO date strings, handling potential None values or format issues."""
+    """Safely parses ISO date strings."""
     if not date_string:
-        return datetime.now(timezone.utc) # Default to now if no date provided
+        return datetime.now(timezone.utc)
     try:
-        # Handle timezone info ('Z' for UTC)
         if date_string.endswith('Z'):
             date_string = date_string[:-1] + '+00:00'
         return datetime.fromisoformat(date_string)
     except (ValueError, TypeError):
         logging.warning(f"Could not parse timestamp: {date_string}. Using current time.")
-        return datetime.now(timezone.utc) # Default to now if parsing fails
+        return datetime.now(timezone.utc)
 
 def fetch_and_store_news():
-    """Fetches news from NewsAPI and stores new articles in ChromaDB."""
-    global processed_urls_this_run
-    logging.info("Attempting to fetch news from NewsAPI...")
-    processed_urls_this_run.clear() # Clear for this new fetch cycle
+    """Fetches news from NewsAPI and stores in PostgreSQL."""
+    logging.info("Fetching news from NewsAPI...")
+
+    # Get database connection
+    conn = get_db_connection()
+    if not conn:
+        logging.error("No database connection available")
+        return
+
+    cursor = conn.cursor()
 
     try:
+        # Fetch news from API
         response = requests.get(NEWSAPI_ENDPOINT, timeout=20)
         response.raise_for_status()
         data = response.json()
@@ -72,80 +86,58 @@ def fetch_and_store_news():
 
         for article in articles:
             url = article.get("url")
-            headline = article.get("title")
-            published_at_str = article.get("publishedAt")
-            content = article.get("description") or article.get("content") or headline # Fallback content
+            title = article.get("title")
+            published_at = parse_iso_datetime(article.get("publishedAt"))
+            content = article.get("description") or article.get("content") or title
+            source = article.get("source", {}).get("name", "NewsAPI")
 
-            if not url or not headline:
-                logging.warning(f"Skipping article with missing URL or headline: {article}")
+            if not url or not title:
+                logging.warning(f"Skipping article with missing URL or title")
                 continue
 
-            # Basic duplicate check using URL as ID
-            # ChromaDB handles persistent duplicates if the ID exists.
-            # This set handles duplicates within the same API response.
-            if url in processed_urls_this_run:
-                continue
-                
-            # Check if already in ChromaDB - More robust check
             try:
-                existing = collection.get(ids=[url])
-                if existing and existing['ids']:
-                    logging.debug(f"Article already exists in DB: {url}")
-                    processed_urls_this_run.add(url) # Add to set even if found in DB
-                    continue # Skip adding if already present
+                # Insert into PostgreSQL (ON CONFLICT prevents duplicates just like ChromaDB)
+                cursor.execute("""
+                    INSERT INTO news_articles (title, content, url, source, published_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (url) DO NOTHING
+                """, (title, content, url, source, published_at))
+
+                if cursor.rowcount > 0:
+                    added_count += 1
+                    logging.debug(f"Added article: {title[:50]}...")
+
             except Exception as e:
-                # Handle cases where ChromaDB might raise an error for non-existent IDs depending on version
-                # Or other potential DB query issues
-                logging.warning(f"Could not check existence for ID {url} in ChromaDB: {e}. Attempting to add anyway.")
+                logging.error(f"Error adding article to database: {e}")
 
-
-            published_dt = parse_iso_datetime(published_at_str)
-            scraped_at = datetime.now(timezone.utc)
-
-            metadata = {
-                "source": article.get("source", {}).get("name", "newsapi"), # Get source name if available
-                "headline": headline,
-                "url": url,
-                "timestamp": published_dt.isoformat(), # Store timestamp as ISO string
-                "scraped_at": scraped_at.isoformat()
-            }
-
-            try:
-                # Add to ChromaDB using URL as the unique ID
-                collection.add(
-                    documents=[content if content else headline], # Use headline if description/content is empty
-                    metadatas=[metadata],
-                    ids=[url]
-                )
-                added_count += 1
-                processed_urls_this_run.add(url)
-                logging.debug(f"Added article: {headline}")
-            except Exception as e:
-                logging.error(f"Error adding article to ChromaDB (ID: {url}): {e}")
-
-        logging.info(f"Added {added_count} new articles to ChromaDB.")
+        # Commit all inserts
+        conn.commit()
+        logging.info(f"Added {added_count} new articles to PostgreSQL.")
 
     except requests.exceptions.RequestException as e:
         logging.error(f"Error fetching data from NewsAPI: {e}")
     except Exception as e:
-        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
+        logging.error(f"An unexpected error occurred: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        conn.close()
 
 
 if __name__ == "__main__":
     setup_logging()
-    logging.info("--- Starting NewsAPI Reader ---")
+    logging.info("--- Starting NewsAPI Reader (PostgreSQL) ---")
 
-    # IMPORTANT: Replace "YOUR_NEWSAPI_KEY_HERE" with your actual key above!
-    if NEWSAPI_KEY == "YOUR_NEWSAPI_KEY_HERE":
-        logging.error("Please replace 'YOUR_NEWSAPI_KEY_HERE' with your actual NewsAPI key in the script.")
+    if not NEWSAPI_KEY or NEWSAPI_KEY == "YOUR_NEWSAPI_KEY_HERE":
+        logging.error("Please set NEWS_API_KEY in your .env file")
     else:
         # Run once immediately
         fetch_and_store_news()
 
-        # Schedule the job to run every 15 minutes (adjust as needed)
+        # Schedule every 15 minutes (same as before)
         schedule.every(15).minutes.do(fetch_and_store_news)
         logging.info("Scheduled news fetching every 15 minutes.")
 
         while True:
             schedule.run_pending()
-            time.sleep(60) # Check every minute if a scheduled job is due
+            time.sleep(60)

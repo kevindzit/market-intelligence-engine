@@ -21,7 +21,7 @@ from monitors.health_monitor import HealthMonitor
 from nice_funcs.twitter_funcs import (
     setup_httpx_patching,
     init_vader_with_crypto_lexicon,
-    init_twitter_client,
+    get_pooled_client,
     auto_refresh_cookies,
     get_db_connection,
     calculate_influence_weight,
@@ -149,8 +149,8 @@ class WhaleTracker:
         self.vader = init_vader_with_crypto_lexicon()
 
     def init_twitter_client(self):
-        """Initialize twikit client"""
-        self.client = init_twitter_client()
+        """Initialize twikit client from account pool"""
+        self.client = get_pooled_client()
 
     def extract_mentioned_tokens(self, text):
         """Extract any crypto tokens mentioned in tweet"""

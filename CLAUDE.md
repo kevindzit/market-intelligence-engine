@@ -48,6 +48,7 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
 - ❌ **Use local LLMs** - APIs are cheaper than $5k GPU server
 - ❌ **Create 5+ files at once** - build incrementally
 - ❌ **Build trading execution** until data + AI validated
+- ❌ **Create .md documentation files** - no TEST_RESULTS.md, SUMMARY.md, CHANGES.md, etc. Just explain things in chat
 
 ---
 
