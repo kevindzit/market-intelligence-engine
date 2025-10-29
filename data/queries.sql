@@ -3,6 +3,8 @@ SELECT * FROM sec_filings;
 SELECT * FROM company_profiles;
 
 
+SELECT source, COUNT(*) as count FROM news_articles GROUP BY source ORDER BY count DESC;
+SELECT COUNT(*) FROM news_articles;
 
 -- 2. Count the total number of trades saved
 -- This is the best way to see if the scraper is adding new data.

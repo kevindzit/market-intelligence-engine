@@ -83,9 +83,17 @@ CREATE TABLE IF NOT EXISTS company_profiles (
 -- ============================================================================
 -- TABLE: twitter_sentiment
 -- Purpose: Stores Twitter sentiment data for crypto trading signals
--- Scrapers: twitter_sentiment.py, twitter_whales.py
+-- Scrapers: All 7 Twitter scrapers using 4-account pool:
+--   - twitter_memecoins.py (PEPE, DOGE, SHIB, BONK, WIF)
+--   - twitter_largecaps.py (BTC, ETH, SOL, BNB, XRP, ADA, TRX)
+--   - twitter_defi.py (UNI, AAVE, LDO, MKR, CRV, GMX, SNX)
+--   - twitter_layer1s.py (AVAX, DOT, NEAR, ATOM, ICP, ALGO, FTM)
+--   - twitter_layer2s.py (ARB, OP, MATIC, METIS, IMX)
+--   - twitter_ai.py (RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR)
+--   - twitter_whales.py (38 whale accounts)
 -- Features: Volume tracking, bot detection, whale tracking, pump detection,
---           momentum metrics, verified accounts, quality filters
+--           momentum metrics (velocity/acceleration), verified accounts, quality filters
+-- Account Pool: 4 Twitter accounts, round-robin rotation, 200 searches/15min
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS twitter_sentiment (
@@ -262,7 +270,10 @@ CREATE INDEX IF NOT EXISTS idx_news_source ON news_articles(source);
 --   - economic_indicators (FRED economic data)
 --   - sec_filings (SEC EDGAR filings)
 --   - company_profiles (FMP fundamental data)
---   - twitter_sentiment (Multi-scraper Twitter sentiment system)
+--   - twitter_sentiment (7 Twitter scrapers, 4-account pool, 200 searches/15min)
+--     * Includes: sentiment_velocity, volume_acceleration, momentum_score
+--     * Yale engagement coefficient, bot detection, pump pattern detection
+--     * 41 tokens tracked + 38 whale accounts
 --   - news_articles (News for AI trading decisions)
 --
 -- Views created:
@@ -274,4 +285,8 @@ CREATE INDEX IF NOT EXISTS idx_news_source ON news_articles(source);
 --
 -- Functions:
 --   - refresh_twitter_volume() (Refresh hourly baselines)
+--
+-- Active Scrapers (15 total):
+--   Traditional Finance: NewsAPI, RSS, Senate, House, FRED, SEC, FMP, yfinance (8)
+--   Crypto Twitter: Memecoins, Largecaps, DeFi, Layer1s, Layer2s, AI, Whales (7)
 -- ============================================================================
