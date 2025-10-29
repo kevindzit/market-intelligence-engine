@@ -112,7 +112,7 @@ class WhaleTracker:
     def __init__(self):
         self.client = None
         self.vader = None
-        self.db_conn = None
+        self.db_pool = None  # Changed from db_conn to db_pool
         self.last_tweet_ids = defaultdict(str)  # Track last seen tweet per whale
         self.health = HealthMonitor('twitter_whales', alert_threshold=10)
 
@@ -121,13 +121,18 @@ class WhaleTracker:
         self.cycle_interval = POLLING_INTERVAL / 60.0  # Convert to minutes for velocity calc
 
     def init_db(self):
-        self.db_conn = get_db_connection(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
+        self.db_pool = get_db_connection(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
         self.load_last_tweets()
 
     def load_last_tweets(self):
         """Load last seen tweet IDs to avoid duplicates"""
-        cursor = self.db_conn.cursor()
+        conn = self.db_pool.get_connection()
+        if not conn:
+            print("[WARNING] Could not get database connection for loading last tweets")
+            return
+
         try:
+            cursor = conn.cursor()
             cursor.execute("""
                 SELECT DISTINCT ON (author_username)
                     author_username, tweet_id
@@ -139,10 +144,11 @@ class WhaleTracker:
 
             for username, tweet_id in cursor.fetchall():
                 self.last_tweet_ids[username] = tweet_id
-        except:
-            pass  # Table might not have data yet
-        finally:
             cursor.close()
+        except Exception as e:
+            print(f"[DEBUG] Load last tweets: {e}")
+        finally:
+            self.db_pool.return_connection(conn)
 
     def init_vader(self):
         """Initialize VADER with crypto lexicon"""
@@ -279,115 +285,130 @@ class WhaleTracker:
         if not all_tweets:
             return 0
 
-        cursor = self.db_conn.cursor()
-        saved = 0
-        high_signal_tweets = []
+        conn = self.db_pool.get_connection()
+        if not conn:
+            print("[ERROR] Could not get database connection to save whale tweets")
+            return 0
 
-        for tweet in all_tweets:
-            # Analyze sentiment
-            sentiment = analyze_sentiment(self.vader, tweet['text'])
+        try:
+            cursor = conn.cursor()
+            saved = 0
+            high_signal_tweets = []
 
-            # Calculate signal strength
-            signal_strength = self.calculate_whale_signal_strength(
-                tweet['username'],
-                tweet['text'],
-                tweet['followers']
-            )
+            for tweet in all_tweets:
+                # Analyze sentiment
+                sentiment = analyze_sentiment(self.vader, tweet['text'])
 
-            # Calculate normalized engagement coefficient (0-1 scale)
-            user_data = {'followers': tweet['followers']}
-            engagement_data = {'likes': tweet.get('likes', 0), 'retweets': tweet.get('retweets', 0)}
-            influence_weight = calculate_influence_weight(user_data, engagement_data, use_bot_penalty=False)
+                # Calculate signal strength
+                signal_strength = self.calculate_whale_signal_strength(
+                    tweet['username'],
+                    tweet['text'],
+                    tweet['followers']
+                )
 
-            # Weighted score using Yale engagement coefficient
-            # influence_weight (0-1) × 100 to maintain alert threshold compatibility
-            # Replaces follower^0.5 with research-backed engagement normalization
-            weighted_score = sentiment * signal_strength * (influence_weight * 100)
+                # Calculate normalized engagement coefficient (0-1 scale)
+                user_data = {'followers': tweet['followers']}
+                engagement_data = {'likes': tweet.get('likes', 0), 'retweets': tweet.get('retweets', 0)}
+                influence_weight = calculate_influence_weight(user_data, engagement_data, use_bot_penalty=False)
 
-            # Determine alert level - whales get boosted alerts
-            if signal_strength >= 2.0 and abs(sentiment) > 0.3:
-                alert_level = "WHALE_SIGNAL"
-            elif weighted_score > 100 or signal_strength >= 1.5:
-                alert_level = "HIGH"
-            elif weighted_score > 50:
-                alert_level = "MEDIUM"
-            else:
-                alert_level = "LOW"
+                # Weighted score using Yale engagement coefficient
+                # influence_weight (0-1) × 100 to maintain alert threshold compatibility
+                # Replaces follower^0.5 with research-backed engagement normalization
+                weighted_score = sentiment * signal_strength * (influence_weight * 100)
 
-            # Track high signal tweets for alerts
-            if alert_level in ["WHALE_SIGNAL", "HIGH"] and tweet['mentioned_tokens']:
-                high_signal_tweets.append({
-                    'username': tweet['username'],
-                    'tokens': tweet['mentioned_tokens'],
-                    'text_preview': tweet['text'][:100],
-                    'signal': signal_strength
-                })
+                # Determine alert level - whales get boosted alerts
+                if signal_strength >= 2.0 and abs(sentiment) > 0.3:
+                    alert_level = "WHALE_SIGNAL"
+                elif weighted_score > 100 or signal_strength >= 1.5:
+                    alert_level = "HIGH"
+                elif weighted_score > 50:
+                    alert_level = "MEDIUM"
+                else:
+                    alert_level = "LOW"
 
-            # Save each mentioned token as separate entry
-            tokens_to_save = tweet['mentioned_tokens'] if tweet['mentioned_tokens'] else ['GENERAL']
+                # Track high signal tweets for alerts
+                if alert_level in ["WHALE_SIGNAL", "HIGH"] and tweet['mentioned_tokens']:
+                    high_signal_tweets.append({
+                        'username': tweet['username'],
+                        'tokens': tweet['mentioned_tokens'],
+                        'text_preview': tweet['text'][:100],
+                        'signal': signal_strength
+                    })
 
-            for token in tokens_to_save:
-                try:
-                    cursor.execute("""
-                        INSERT INTO twitter_sentiment
-                        (tweet_id, token, tweet_text, sentiment_score, sentiment_label,
-                         author_username, author_followers, retweet_count, like_count,
-                         reply_count, quote_count,
-                         tweet_created_at, scraped_at, weighted_score, alert_level,
-                         is_whale, volume_spike, bot_probability, pump_score, influence_weight, source,
-                         verified, has_urls, hashtag_count, following_count,
-                         sentiment_velocity, volume_acceleration, momentum_score)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (tweet_id, token) DO NOTHING
-                    """, (
-                        tweet['tweet_id'],
-                        token,
-                        tweet['text'],
-                        round(sentiment, 4),
-                        'positive' if sentiment > 0.1 else 'negative' if sentiment < -0.1 else 'neutral',
-                        tweet['username'],
-                        tweet['followers'],
-                        tweet['retweets'],
-                        tweet['likes'],
-                        tweet['replies'],
-                        tweet['quotes'],
-                        tweet['created_at'],
-                        tweet['timestamp'],
-                        round(weighted_score, 4),
-                        alert_level,
-                        True,  # All whale watchlist accounts are considered whales
-                        None,  # volume_spike - N/A for account-based tracking
-                        None,  # bot_probability - whales are pre-vetted
-                        None,  # pump_score - whales are trusted sources
-                        round(influence_weight, 4),
-                        'whale_tracker',  # Source identifier
-                        tweet.get('verified', False),
-                        tweet.get('has_urls', False),
-                        tweet.get('hashtag_count', 0),
-                        tweet.get('following', 0),
-                        None,  # sentiment_velocity - calculated per token, not per tweet
-                        None,  # volume_acceleration - N/A for account-based
-                        None   # momentum_score - N/A for account-based
-                    ))
+                # Save each mentioned token as separate entry
+                tokens_to_save = tweet['mentioned_tokens'] if tweet['mentioned_tokens'] else ['GENERAL']
 
-                    if cursor.rowcount > 0:
-                        saved += 1
+                for token in tokens_to_save:
+                    try:
+                        cursor.execute("""
+                            INSERT INTO twitter_sentiment
+                            (tweet_id, token, tweet_text, sentiment_score, sentiment_label,
+                             author_username, author_followers, retweet_count, like_count,
+                             reply_count, quote_count,
+                             tweet_created_at, scraped_at, weighted_score, alert_level,
+                             is_whale, volume_spike, bot_probability, pump_score, influence_weight, source,
+                             verified, has_urls, hashtag_count, following_count,
+                             sentiment_velocity, volume_acceleration, momentum_score)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (tweet_id, token) DO NOTHING
+                        """, (
+                            tweet['tweet_id'],
+                            token,
+                            tweet['text'],
+                            round(sentiment, 4),
+                            'positive' if sentiment > 0.1 else 'negative' if sentiment < -0.1 else 'neutral',
+                            tweet['username'],
+                            tweet['followers'],
+                            tweet['retweets'],
+                            tweet['likes'],
+                            tweet['replies'],
+                            tweet['quotes'],
+                            tweet['created_at'],
+                            tweet['timestamp'],
+                            round(weighted_score, 4),
+                            alert_level,
+                            True,  # All whale watchlist accounts are considered whales
+                            None,  # volume_spike - N/A for account-based tracking
+                            None,  # bot_probability - whales are pre-vetted
+                            None,  # pump_score - whales are trusted sources
+                            round(influence_weight, 4),
+                            'whale_tracker',  # Source identifier
+                            tweet.get('verified', False),
+                            tweet.get('has_urls', False),
+                            tweet.get('hashtag_count', 0),
+                            tweet.get('following', 0),
+                            None,  # sentiment_velocity - calculated per token, not per tweet
+                            None,  # volume_acceleration - N/A for account-based
+                            None   # momentum_score - N/A for account-based
+                        ))
 
-                except Exception as e:
-                    if self.db_conn:
-                        self.db_conn.rollback()
-                    print(f"[ERROR] Failed to save tweet: {e}")
+                        if cursor.rowcount > 0:
+                            saved += 1
 
-        self.db_conn.commit()
-        cursor.close()
+                    except Exception as e:
+                        print(f"[WARNING] Failed to insert whale tweet: {e}")
+                        conn.rollback()
 
-        print(f"\n[OK] Saved {saved} new whale tweets")
+            conn.commit()
+            cursor.close()
 
-        # Show count of high signal tweets without previews
-        if high_signal_tweets:
-            print(f"[INFO] {len(high_signal_tweets)} high-signal tweets detected (saved to database)")
+            print(f"\n[OK] Saved {saved} new whale tweets")
 
-        return saved
+            # Show count of high signal tweets without previews
+            if high_signal_tweets:
+                print(f"[INFO] {len(high_signal_tweets)} high-signal tweets detected (saved to database)")
+
+            return saved
+
+        except Exception as e:
+            print(f"[ERROR] Database operation failed: {e}")
+            if conn:
+                conn.rollback()
+            return 0
+
+        finally:
+            if conn:
+                self.db_pool.return_connection(conn)
 
     async def run_cycle(self):
         """Check all whale accounts"""
@@ -419,7 +440,7 @@ class WhaleTracker:
                         print(f"[RETRY] Retrying all whale accounts with fresh client...")
                         continue  # Retry the loop with new client
                     else:
-                        print(f"[FATAL] Failed to extract cookies from Firefox. Skipping this cycle.")
+                        print(f"[FATAL] Failed to refresh cookies. Skipping this cycle.")
                         break
                 else:
                     # Non-auth error - just log and continue

@@ -14,6 +14,8 @@ from pathlib import Path
 
 # Global list of running processes
 running_processes = {}
+restart_attempts = {}  # Track restart attempts per scraper
+MAX_RESTART_ATTEMPTS = 3  # Maximum automatic restarts per scraper
 
 def load_config():
     """Load scraper configuration from YAML file."""
@@ -114,13 +116,43 @@ def stop_all_scrapers():
 
 def monitor_scrapers():
     """Monitor running scrapers and restart if they crash."""
+    scrapers = load_config()
+    scrapers_dict = {s['name']: s for s in scrapers if s.get('enabled', False)}
+
     while True:
         try:
             # Check each process
             for name, process in list(running_processes.items()):
                 if process and process.poll() is not None:  # Process ended
-                    print(f"[WARNING] {name} stopped unexpectedly!")
-                    # Could add auto-restart logic here
+                    exit_code = process.returncode
+                    print(f"[WARNING] {name} stopped unexpectedly (exit code: {exit_code})")
+
+                    # Check restart attempts
+                    attempts = restart_attempts.get(name, 0)
+
+                    if attempts < MAX_RESTART_ATTEMPTS:
+                        # Attempt restart
+                        restart_attempts[name] = attempts + 1
+                        print(f"[RESTART] Attempting to restart {name} (attempt {restart_attempts[name]}/{MAX_RESTART_ATTEMPTS})")
+
+                        # Wait a bit before restarting
+                        time.sleep(5)
+
+                        # Restart the scraper
+                        if name in scrapers_dict:
+                            new_process = start_scraper(scrapers_dict[name])
+                            if new_process:
+                                running_processes[name] = new_process
+                                print(f"[OK] {name} restarted successfully (PID: {new_process.pid})")
+                            else:
+                                print(f"[ERROR] Failed to restart {name}")
+                        else:
+                            print(f"[ERROR] Cannot restart {name} - not found in config")
+                    else:
+                        print(f"[FATAL] {name} has crashed {MAX_RESTART_ATTEMPTS} times. Giving up.")
+                        print(f"[INFO] Please check logs/{name.lower().replace(' ', '_')}_alerts.log for details")
+                        # Remove from running processes
+                        del running_processes[name]
 
             # Sleep for a bit
             time.sleep(10)
@@ -184,16 +216,18 @@ def main():
     print("Starting scrapers...")
     print("="*60 + "\n")
 
-    # Start all enabled scrapers
-    for scraper in enabled_scrapers:
+    # Start all enabled scrapers with staggered timing
+    for i, scraper in enumerate(enabled_scrapers):
         name = scraper['name']
         process = start_scraper(scraper)
 
         if process:
             running_processes[name] = process
 
-        # Small delay between starts
-        time.sleep(1)
+        # Stagger starts by 10 seconds to avoid rate limit collisions
+        if i < len(enabled_scrapers) - 1:  # Don't wait after last scraper
+            print(f"[WAIT] Waiting 10 seconds before starting next scraper...")
+            time.sleep(10)
 
     if not running_processes:
         print("\n[ERROR] No scrapers started successfully!")

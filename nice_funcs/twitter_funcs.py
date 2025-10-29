@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import psycopg2
+from psycopg2 import pool
 import httpx
 import re
 from random import randint
@@ -388,7 +389,7 @@ def init_twitter_client(cookies_path="cookies/cookies.json"):
         sys.exit(1)
 
 def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
-    """Refresh cookies by extracting them from Firefox and creating a fresh client
+    """Refresh cookies by extracting them from Chrome and creating a fresh client
 
     IMPORTANT: If using account pool, automatically detects which account and refreshes
     the correct account's cookies. Falls back to single-account mode if pool not available.
@@ -412,7 +413,7 @@ def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
         if account_num is not None:
             # This is a pooled account - refresh it properly
             print(f"[AUTO-REFRESH] Detected Account {account_num} needs refresh")
-            print(f"[AUTO-REFRESH] Please ensure Account {account_num} is logged into Firefox")
+            print(f"[AUTO-REFRESH] Please ensure Account {account_num} is logged into Chrome")
             print(f"[AUTO-REFRESH] Extracting fresh cookies...")
 
             success = account_pool.refresh_account(account_num)
@@ -425,7 +426,7 @@ def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
                         return acc['client']
             else:
                 print(f"[AUTO-REFRESH] ✗ Failed to refresh Account {account_num}")
-                print(f"[AUTO-REFRESH] ✗ Make sure Account {account_num} is logged into Firefox")
+                print(f"[AUTO-REFRESH] ✗ Make sure Account {account_num} is logged into Chrome")
                 print(f"[AUTO-REFRESH] ✗ Or manually run: python scripts/setup_account_cookies.py --account {account_num}")
                 return None
 
@@ -489,8 +490,78 @@ def get_pooled_client():
 # DATABASE HELPERS
 # ============================================================================
 
-def get_db_connection(host, port, database, user, password):
-    """Create PostgreSQL database connection
+# Global connection pool (one per process)
+_connection_pool = None
+
+class DatabaseConnectionPool:
+    """
+    Simple connection pool wrapper for PostgreSQL
+    Provides automatic reconnection and connection reuse
+    """
+    def __init__(self, host, port, database, user, password, minconn=1, maxconn=5):
+        """
+        Initialize connection pool
+
+        Args:
+            host: Database host
+            port: Database port
+            database: Database name
+            user: Database user
+            password: Database password
+            minconn: Minimum connections to maintain
+            maxconn: Maximum connections allowed
+        """
+        try:
+            self.pool = pool.SimpleConnectionPool(
+                minconn,
+                maxconn,
+                host=host,
+                port=port,
+                database=database,
+                user=user,
+                password=password
+            )
+            print(f"[OK] Database connection pool created ({minconn}-{maxconn} connections)")
+        except Exception as e:
+            print(f"[ERROR] Failed to create connection pool: {e}")
+            sys.exit(1)
+
+    def get_connection(self):
+        """
+        Get a connection from the pool
+
+        Returns:
+            psycopg2.connection: Database connection
+        """
+        try:
+            return self.pool.getconn()
+        except Exception as e:
+            print(f"[ERROR] Failed to get connection from pool: {e}")
+            return None
+
+    def return_connection(self, conn):
+        """
+        Return a connection to the pool
+
+        Args:
+            conn: Connection to return
+        """
+        if conn:
+            try:
+                self.pool.putconn(conn)
+            except Exception as e:
+                print(f"[WARNING] Failed to return connection to pool: {e}")
+
+    def close_all(self):
+        """Close all connections in the pool"""
+        if self.pool:
+            self.pool.closeall()
+
+
+def init_db_pool(host, port, database, user, password):
+    """
+    Initialize the global database connection pool
+    Call this once at scraper startup
 
     Args:
         host: Database host
@@ -500,24 +571,36 @@ def get_db_connection(host, port, database, user, password):
         password: Database password
 
     Returns:
-        psycopg2.connection: Database connection
+        DatabaseConnectionPool: The connection pool instance
+    """
+    global _connection_pool
+    if _connection_pool is None:
+        _connection_pool = DatabaseConnectionPool(host, port, database, user, password)
+    return _connection_pool
+
+
+def get_db_connection(host, port, database, user, password):
+    """
+    Create or get the database connection pool
+
+    IMPORTANT: Now returns a connection pool instead of a single connection.
+    Use pool.get_connection() / pool.return_connection() for operations.
+
+    Args:
+        host: Database host
+        port: Database port
+        database: Database name
+        user: Database user
+        password: Database password
+
+    Returns:
+        DatabaseConnectionPool: Connection pool instance
 
     Raises:
-        SystemExit: If connection fails
+        SystemExit: If pool creation fails
     """
-    try:
-        conn = psycopg2.connect(
-            host=host,
-            port=port,
-            database=database,
-            user=user,
-            password=password
-        )
-        print("[OK] Database connected")
-        return conn
-    except Exception as e:
-        print(f"[ERROR] Database connection failed: {e}")
-        sys.exit(1)
+    # Initialize pool if not already created
+    return init_db_pool(host, port, database, user, password)
 
 # ============================================================================
 # VOLUME SPIKE CALCULATION

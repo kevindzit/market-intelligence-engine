@@ -170,7 +170,7 @@ def refresh_cookies(headless=False, account_email=None, account_password=None, a
         # Check if we got the critical cookies
         if 'auth_token' not in cookie_dict:
             print("[ERROR] Critical cookie 'auth_token' not found!")
-            print("[ERROR] Make sure you're logged into Twitter in Firefox")
+            print("[ERROR] Make sure you're logged into Twitter in Chrome")
             return None
 
         if 'ct0' not in cookie_dict:
@@ -233,7 +233,7 @@ def main():
             return 1
     else:
         print("\n[FAILED] Could not extract cookies")
-        print("[INFO] Make sure you're logged into Twitter in Firefox")
+        print("[INFO] Make sure you're logged into Twitter in Chrome")
         return 1
 
 if __name__ == "__main__":
