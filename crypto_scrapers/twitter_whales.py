@@ -24,6 +24,7 @@ from nice_funcs.twitter_funcs import (
     get_pooled_client,
     auto_refresh_cookies,
     get_db_connection,
+    calculate_bot_probability,
     calculate_influence_weight,
     analyze_sentiment,
     calculate_whale_velocity_metrics,
@@ -285,8 +286,18 @@ class WhaleTracker:
                 )
 
                 # Calculate normalized engagement coefficient (0-1 scale)
-                user_data = {'followers': tweet['followers']}
+                user_data = {
+                    'followers': tweet['followers'],
+                    'following': tweet.get('following', 0),
+                    'username': tweet['username'],
+                    'bio': tweet.get('bio'),
+                    'profile_image_custom': True  # Whales have custom images
+                }
                 engagement_data = {'likes': tweet.get('likes', 0), 'retweets': tweet.get('retweets', 0)}
+
+                # Calculate bot probability (for security monitoring)
+                bot_prob = calculate_bot_probability(user_data)
+
                 influence_weight = calculate_influence_weight(user_data, engagement_data, use_bot_penalty=False)
 
                 # Weighted score using Yale engagement coefficient
@@ -347,7 +358,7 @@ class WhaleTracker:
                             alert_level,
                             True,  # All whale watchlist accounts are considered whales
                             None,  # volume_spike - N/A for account-based tracking
-                            None,  # bot_probability - whales are pre-vetted
+                            round(bot_prob, 3),  # bot_probability - for security monitoring
                             None,  # pump_score - whales are trusted sources
                             round(influence_weight, 4),
                             'whale_tracker',  # Source identifier

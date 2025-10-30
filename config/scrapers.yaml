@@ -115,7 +115,7 @@ scrapers:
   - name: Twitter AI/ML
     script: crypto_scrapers/twitter_ai.py
     category: crypto
-    description: AI/ML tokens (RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR)
+    description: AI/ML tokens (RENDER, FET, GRT, OCEAN, AGIX, TAO)
     enabled: true
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "5 minutes"

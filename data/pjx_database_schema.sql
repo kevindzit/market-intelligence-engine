@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS company_profiles (
 --   - twitter_defi.py (UNI, AAVE, LDO, MKR, CRV, GMX, SNX)
 --   - twitter_layer1s.py (AVAX, DOT, NEAR, ATOM, ICP, ALGO, FTM)
 --   - twitter_layer2s.py (ARB, OP, MATIC, METIS, IMX)
---   - twitter_ai.py (RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR)
+--   - twitter_ai.py (RENDER, FET, GRT, OCEAN, AGIX, TAO)
 --   - twitter_whales.py (38 whale accounts)
 -- Features: Volume tracking, bot detection, whale tracking, pump detection,
 --           momentum metrics (velocity/acceleration), verified accounts, quality filters
@@ -273,7 +273,7 @@ CREATE INDEX IF NOT EXISTS idx_news_source ON news_articles(source);
 --   - twitter_sentiment (7 Twitter scrapers, 4-account pool, 200 searches/15min)
 --     * Includes: sentiment_velocity, volume_acceleration, momentum_score
 --     * Yale engagement coefficient, bot detection, pump pattern detection
---     * 41 tokens tracked + 38 whale accounts
+--     * 37 tokens tracked + 38 whale accounts
 --   - news_articles (News for AI trading decisions)
 --
 -- Views created:

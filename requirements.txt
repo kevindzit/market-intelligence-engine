@@ -35,5 +35,7 @@ vaderSentiment>=3.3.2
 python-dotenv>=1.0.0
 httpx>=0.28.0
 
-
-ones that i added that might be dupes but might need to be checked: pip install torch   pip install transformers  pip3 install emoji==0.6.0
+# Optional: Uncomment for BERTweet approach (not recommended - 130x slower than VADER)
+# torch>=2.7.0
+# transformers>=4.57.0
+# emoji==0.6.0

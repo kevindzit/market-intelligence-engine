@@ -151,6 +151,10 @@ class TwitterTokenScraperBase:
                     if any(spam in text_lower for spam in SPAM_KEYWORDS):
                         continue
 
+                    # Skip retweets (we only want original content)
+                    if hasattr(tweet, 'retweeted_status') and tweet.retweeted_status:
+                        continue
+
                     user = tweet.user if hasattr(tweet, 'user') and tweet.user else None
 
                     # Quality filter - skip low-follower accounts
