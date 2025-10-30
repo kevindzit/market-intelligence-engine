@@ -121,34 +121,12 @@ class WhaleTracker:
         self.cycle_interval = POLLING_INTERVAL / 60.0  # Convert to minutes for velocity calc
 
     def init_db(self):
+        """Initialize database connection pool
+
+        Note: last_tweet_ids tracks seen tweets within current session only.
+        Database ON CONFLICT clause handles cross-session duplicates automatically.
+        """
         self.db_pool = get_db_connection(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
-        self.load_last_tweets()
-
-    def load_last_tweets(self):
-        """Load last seen tweet IDs to avoid duplicates"""
-        conn = self.db_pool.get_connection()
-        if not conn:
-            print("[WARNING] Could not get database connection for loading last tweets")
-            return
-
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT DISTINCT ON (author_username)
-                    author_username, tweet_id
-                FROM twitter_sentiment
-                WHERE source = 'whale_tracker'
-                    AND author_username = ANY(%s)
-                ORDER BY author_username, scraped_at DESC
-            """, (list(WHALE_ACCOUNTS.keys()),))
-
-            for username, tweet_id in cursor.fetchall():
-                self.last_tweet_ids[username] = tweet_id
-            cursor.close()
-        except Exception as e:
-            print(f"[DEBUG] Load last tweets: {e}")
-        finally:
-            self.db_pool.return_connection(conn)
 
     def init_vader(self):
         """Initialize VADER with crypto lexicon"""

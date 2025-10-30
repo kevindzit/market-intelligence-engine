@@ -20,8 +20,7 @@ TOKENS = [
     "GRT",      # The Graph - $2.3B cap, blockchain data indexing
     "OCEAN",    # Ocean Protocol - Data marketplace for AI
     "AGIX",     # SingularityNET - AGI marketplace
-    "TAO",      # Bittensor - Decentralized ML network
-    "RNDR"      # Alternative ticker for Render (used interchangeably)
+    "TAO"       # Bittensor - Decentralized ML network
 ]
 
 

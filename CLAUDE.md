@@ -8,9 +8,9 @@ Instructions for Claude Code on the PJX Crypto Trading System.
 
 **PRIMARY GOAL: Collect the richest possible crypto market data**
 
-We have built **production-ready Twitter sentiment scrapers** using research-backed strategies. Now duplicating these working systems to cover all parts of the crypto market.
+We have built **production-ready Twitter sentiment scrapers** using research-backed strategies covering 37 tokens across 6 major crypto sectors plus 38 whale accounts.
 
-**Current Phase**: Scaling Twitter scrapers across different crypto sectors (meme coins, DeFi, Layer 1s, etc.)
+**Current Phase**: System optimization and data quality improvements
 
 ---
 
@@ -93,7 +93,7 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
     - Source ID: `layer2s`
 
 11. **Twitter AI/ML** ([crypto_scrapers/twitter_ai.py](crypto_scrapers/twitter_ai.py)) - ~500 lines
-    - Tokens: RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR
+    - Tokens: RENDER, FET, GRT, OCEAN, AGIX, TAO
     - Source ID: `ai`
 
 **Account-Based Scrapers (10-min cycles):**
@@ -140,13 +140,13 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
 - **Pump Score** - Detects artificial pump schemes
 - **Influence Weight** - 0-1 normalized engagement coefficient
 
-### Current Deployment (41 Tokens Tracked)
+### Current Deployment (37 Tokens Tracked)
 - **Meme Coins**: PEPE, DOGE, SHIB, BONK, WIF (5 tokens)
 - **Large Caps**: BTC, ETH, SOL, BNB, XRP, ADA, TRX (7 tokens)
 - **DeFi**: UNI, AAVE, LDO, MKR, CRV, GMX, SNX (7 tokens)
 - **Layer 1s**: AVAX, DOT, NEAR, ATOM, ICP, ALGO, FTM (7 tokens)
 - **Layer 2s**: ARB, OP, MATIC, METIS, IMX (5 tokens)
-- **AI/ML**: RENDER, FET, GRT, OCEAN, AGIX, TAO, RNDR (7 tokens)
+- **AI/ML**: RENDER, FET, GRT, OCEAN, AGIX, TAO (6 tokens)
 - **Whale Tracking**: 38 active accounts × 10-min cycles (7 slots available, MAX = 45)
 - **Rate Limits**: 50 calls/15min per endpoint - fleet designed to stay safely under limits
 
@@ -411,7 +411,7 @@ python orchestrator.py
 
 ### Current Work ✅ COMPLETE
 **Twitter Intelligence Fleet - Production Ready**
-- Built 6 token-based scrapers covering 41 tokens across all major crypto sectors
+- Built 6 token-based scrapers covering 37 tokens across all major crypto sectors
 - Built 1 whale tracker covering 38 high-signal accounts
 - All using proven strategy: VADER + Yale + velocity + MIN_FOLLOWERS = 5000 filter
 - All data → single twitter_sentiment table for unified AI analysis

@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS twitter_sentiment (
     volume_spike NUMERIC(5,2),
     bot_probability NUMERIC(4,3),
     pump_score NUMERIC(4,3),
-    influence_weight NUMERIC(10,2),
+    influence_weight NUMERIC(10,4),
     source VARCHAR(50) DEFAULT 'general_search',
     verified BOOLEAN DEFAULT false,
     has_urls BOOLEAN DEFAULT false,

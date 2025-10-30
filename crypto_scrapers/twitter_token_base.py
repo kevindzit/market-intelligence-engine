@@ -137,7 +137,7 @@ class TwitterTokenScraperBase:
         try:
             search_term = f"${token}"
             print(f"\nSearching: {search_term}")
-            time.sleep(randint(1, 3))
+            await asyncio.sleep(randint(1, 3))
 
             tweets = await self.client.search_tweet(search_term, product='Latest')
 
@@ -186,7 +186,7 @@ class TwitterTokenScraperBase:
             reset_time = datetime.fromtimestamp(e.rate_limit_reset)
             wait_seconds = (reset_time - datetime.now()).total_seconds() + randint(5, 10)
             print(f"Rate limited. Waiting {int(wait_seconds)}s...")
-            time.sleep(wait_seconds)
+            await asyncio.sleep(wait_seconds)
         except Exception as e:
             error_msg = str(e).lower()
             if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
