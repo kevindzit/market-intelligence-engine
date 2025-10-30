@@ -264,6 +264,33 @@ CREATE INDEX IF NOT EXISTS idx_news_scraped_at ON news_articles(scraped_at DESC)
 CREATE INDEX IF NOT EXISTS idx_news_source ON news_articles(source);
 
 -- ============================================================================
+-- TABLE: crypto_ohlcv
+-- Purpose: Stores OHLCV (Open, High, Low, Close, Volume) price data
+-- Scraper: binance_ohlcv.py (or CoinGecko/Kraken for US users)
+-- Features: 5-minute candles, multiple source support, validation checks
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS crypto_ohlcv (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    timeframe VARCHAR(10) NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    open NUMERIC(20,8) NOT NULL,
+    high NUMERIC(20,8) NOT NULL,
+    low NUMERIC(20,8) NOT NULL,
+    close NUMERIC(20,8) NOT NULL,
+    volume NUMERIC(30,8) NOT NULL,
+    source VARCHAR(50) DEFAULT 'binance',
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_ohlcv UNIQUE (token, timeframe, timestamp, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ohlcv_token ON crypto_ohlcv(token);
+CREATE INDEX IF NOT EXISTS idx_ohlcv_timestamp ON crypto_ohlcv(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_ohlcv_token_time ON crypto_ohlcv(token, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_ohlcv_timeframe ON crypto_ohlcv(timeframe);
+
+-- ============================================================================
 -- COMPLETE SCHEMA LOADED
 -- ============================================================================
 -- Tables created:
@@ -276,6 +303,9 @@ CREATE INDEX IF NOT EXISTS idx_news_source ON news_articles(source);
 --     * Yale engagement coefficient, bot detection, pump pattern detection
 --     * 42 tokens tracked + 42 whale accounts
 --   - news_articles (News for AI trading decisions)
+--   - crypto_ohlcv (OHLCV price data for 42 tokens)
+--     * 5-minute candles, multiple exchange support
+--     * Validation checks, source tracking
 --
 -- Views created:
 --   - recent_volume_spikes (5-min volume tracking)
@@ -287,7 +317,8 @@ CREATE INDEX IF NOT EXISTS idx_news_source ON news_articles(source);
 -- Functions:
 --   - refresh_twitter_volume() (Refresh hourly baselines)
 --
--- Active Scrapers (16 total):
+-- Active Scrapers (17 total):
 --   Traditional Finance: NewsAPI, RSS, Senate, House, FRED, SEC, FMP, yfinance (8)
 --   Crypto Twitter: Memecoins, Largecaps, DeFi, Layer1s, Layer2s, AI, Emerging, Whales (8)
+--   Crypto Price: Binance OHLCV (or alternatives for US users) (1)
 -- ============================================================================

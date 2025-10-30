@@ -46,7 +46,8 @@
       "Bash(timeout 60 python setup_account_cookies.py:*)",
       "Bash(timeout 90 python:*)",
       "Bash(timeout 120 python:*)",
-      "Bash(do python -m py_compile \"$file\")"
+      "Bash(do python -m py_compile \"$file\")",
+      "Bash(pip install:*)"
     ],
     "deny": [],
     "ask": []

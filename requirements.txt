@@ -38,4 +38,4 @@ httpx>=0.28.0
 # Optional: Uncomment for BERTweet approach (not recommended - 130x slower than VADER)
 # torch>=2.7.0
 # transformers>=4.57.0
-# emoji==0.6.0
+# emoji==0.6.0ccxt==4.4.72
