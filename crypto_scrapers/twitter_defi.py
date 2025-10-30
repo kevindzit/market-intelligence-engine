@@ -21,7 +21,8 @@ TOKENS = [
     "MKR",      # MakerDAO - $8B TVL, DAI stablecoin issuer
     "CRV",      # Curve - $4.2B TVL, stablecoin DEX, gauge wars
     "GMX",      # GMX - Perpetuals DEX, real yield pioneer
-    "SNX"       # Synthetix - Derivatives platform, v3 launch
+    "SNX",      # Synthetix - Derivatives platform, v3 launch
+    "LINK"      # Chainlink - Oracle network, powers DeFi price feeds
 ]
 
 

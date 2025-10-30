@@ -37,11 +37,11 @@ setup_httpx_patching()
 from twikit import TooManyRequests
 
 # WHALE WATCHLIST - High-signal accounts that move markets
-# CURRENT: 38 accounts (rate limit safe, MAX = 45)
-# Updated: October 2025 - Removed suspended/deleted accounts
+# CURRENT: 42 accounts (rate limit safe, MAX = 45)
+# Updated: October 29, 2025 - Added 4 top-tier 2025 influencers
 WHALE_ACCOUNTS = {
-    # ========== ALPHA CALLERS & EARLY GEM SPECIALISTS (13) ==========
-    'blknoiz06': 'Alpha Caller (MOG, WIF) - Ansem, meme king',
+    # ========== ALPHA CALLERS & EARLY GEM SPECIALISTS (15) ==========
+    'blknoiz06': 'Alpha Caller (MOG, WIF) - Ansem, meme king, $20-30M net worth',
     'LarpVonTrier': 'Alpha Caller (KeyCat)',
     'artsch00lreject': 'Alpha Caller (PopCat)',
     'thecexoffender': 'Alpha Caller (Early gems)',
@@ -55,33 +55,37 @@ WHALE_ACCOUNTS = {
     'FrankDeGods': 'Community Leader & Social Experimenter',
     'zachxbt': 'Crypto Detective (Scam exposure)',
     'tier10k': 'Alpha Caller (Hidden gems)',
+    'MustStopMurad': 'Alpha Caller (Meme super cycle) - Works with Ansem',
+    'Trader_XO_': 'Alpha Caller (500K) - Precise altcoin setups, swing trading',
 
     # ========== INSIDERS & DEPLOYERS (2) ==========
     'GamesMasterFlex': 'Insider (Dogwifhat organizer)',
     'degenharambe': 'Insider (PEPE founder alias)',
 
-    # ========== ON-CHAIN ANALYSTS & WHALE TRACKERS (8) ==========
+    # ========== ON-CHAIN ANALYSTS & WHALE TRACKERS (9) ==========
     'lookonchain': 'On-Chain Detective (284K) - Smart money tracker',
     'woonomic': 'Senior Analyst (Willy Woo) - NVT ratio pioneer',
     'WClementeIII': 'Lead Analyst (Will Clemente, 706K) - Blockware',
     'DylanLeClair_': 'Bitcoin On-Chain Expert - Independent analyst',
-    'ali_charts': 'TA Charts (Ali Martinez) - Clean explanations',
+    'ali_charts': 'TA Charts (Ali Martinez, 135K) - Clean explanations',
     'cryptoquant_com': 'On-Chain Platform - Real-time insights',
     'rasmr_eth': 'Blockchain Researcher - Trading signals',
     'DeBankDeFi': 'Flow Signal (Whale tracking DeFi)',
+    'arkhamintel': 'On-Chain Intel (331K) - Whale movements, multi-chain',
 
     # ========== TECHNICAL ANALYSIS EXPERTS (3) ==========
     'CryptoCred': 'Technical Analysis Expert (700K) - London-based',
     'SmartContractor': 'Technical Analysis (Bluntz) - Elliott Wave',
     'VentureCoinist': 'TA Expert (308K) - Trade entries',
 
-    # ========== HIGH-PROFILE GENERAL CRYPTO (6) ==========
+    # ========== HIGH-PROFILE GENERAL CRYPTO (7) ==========
     'Ashcryptoreal': 'Dubai Analyst (1.7M) - Market forecasts since 2015',
     'thecryptodog': 'Altcoin Commentary (715K) - Top altcoins',
     'Pentosh1': 'Free Alpha Provider (700K+) - 4+ years',
     'BenjaminCowen': 'Data-Driven Cycles - Math-based logic',
     'VitalikButerin': 'Ethereum Co-Founder - Macro insights',
     'APompliano': 'Anthony Pompliano - Macro + Bitcoin',
+    'CryptoKaleo': 'Options Trader (473K) - Daily market commentary, top calls',
 
     # ========== PLATFORM/ECOSYSTEM (6) ==========
     'TheCryptoLark': 'Market Analysis (Lark Davis) - Meme updates',
@@ -90,7 +94,7 @@ WHALE_ACCOUNTS = {
     'BasedBrett': 'Base Chain Memecoin - Official account',
     'Aeyakovenko': 'Solana Co-Founder - Anatoly Yakovenko',
     'whale_alert': 'Flow Signal (Large transactions) - Real-time alerts',
-}  # Total: 38 accounts (7 slots available for new whales)
+}  # Total: 42 accounts (3 slots available for new whales)
 
 # Tokens to specifically look for in whale tweets
 PRIORITY_TOKENS = [

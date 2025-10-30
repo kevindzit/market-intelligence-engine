@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import asyncio
 from crypto_scrapers.twitter_token_base import TwitterTokenScraperBase
 
-# LARGE CAP TOKENS - Top 7 by market cap (market movers)
+# LARGE CAP TOKENS - Top 8 by market cap (market movers)
 TOKENS = [
     "BTC",      # Bitcoin - $108K, 1.65M tweets/week, market leader
     "ETH",      # Ethereum - Top 2, 426K tweets/week, DeFi base
@@ -21,7 +21,8 @@ TOKENS = [
     "BNB",      # Binance - 638K tweets/week, exchange dominance
     "XRP",      # Ripple - 141K tweets/week, institutional adoption
     "ADA",      # Cardano - $0.735, 120K tweets/week
-    "TRX"       # Tron - $80.7B USDT hosted
+    "TRX",      # Tron - $80.7B USDT hosted
+    "LTC"       # Litecoin - Top 15, proven track record, payment focus
 ]
 
 
