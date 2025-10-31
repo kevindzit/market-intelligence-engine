@@ -364,6 +364,82 @@ CREATE INDEX IF NOT EXISTS idx_fear_greed_timestamp ON fear_greed_index(timestam
 CREATE INDEX IF NOT EXISTS idx_fear_greed_value ON fear_greed_index(value);
 
 -- ============================================================================
+-- TABLE: liquidations
+-- Purpose: Tracks real-time liquidations for reversal signals
+-- Scraper: binance_liquidations.py
+-- Features: Flash crash detection, capitulation signals
+-- Critical for: Catching bottoms/tops during cascading liquidations
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS liquidations (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    liquidation_value NUMERIC(20,8) NOT NULL,
+    price NUMERIC(20,8),
+    quantity NUMERIC(20,8),
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    source VARCHAR(50) DEFAULT 'binance',
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_liquidations_token ON liquidations(token);
+CREATE INDEX IF NOT EXISTS idx_liquidations_timestamp ON liquidations(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_liquidations_value ON liquidations(liquidation_value DESC);
+CREATE INDEX IF NOT EXISTS idx_liquidations_side ON liquidations(side);
+CREATE INDEX IF NOT EXISTS idx_liquidations_token_time ON liquidations(token, timestamp DESC);
+
+-- ============================================================================
+-- TABLE: open_interest
+-- Purpose: Tracks total $ in active futures contracts (leverage indicator)
+-- Scraper: binance_oi.py
+-- Features: OI change tracking, leverage buildup detection
+-- Critical for: Predicting volatility, detecting overleveraged markets
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS open_interest (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    open_interest_contracts NUMERIC(30,8) NOT NULL,
+    open_interest_usd NUMERIC(30,2) NOT NULL,
+    mark_price NUMERIC(20,8),
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    source VARCHAR(50) DEFAULT 'binance',
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_oi_token ON open_interest(token);
+CREATE INDEX IF NOT EXISTS idx_oi_timestamp ON open_interest(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_oi_usd ON open_interest(open_interest_usd DESC);
+CREATE INDEX IF NOT EXISTS idx_oi_token_time ON open_interest(token, timestamp DESC);
+
+-- ============================================================================
+-- TABLE: exchange_flows
+-- Purpose: Tracks whale movements to/from exchanges
+-- Scraper: exchange_flows.py
+-- Features: Tracks BTC, ETH, SOL movements to/from major exchanges
+-- Critical for: Detecting accumulation (bullish) vs distribution (bearish)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS exchange_flows (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    flow_type VARCHAR(20) NOT NULL,
+    amount NUMERIC(20,8) NOT NULL,
+    usd_value NUMERIC(20,2),
+    exchange VARCHAR(50),
+    transaction_hash VARCHAR(100),
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    source VARCHAR(50) DEFAULT 'blockchain',
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_flows_token ON exchange_flows(token);
+CREATE INDEX IF NOT EXISTS idx_flows_timestamp ON exchange_flows(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_flows_type ON exchange_flows(flow_type);
+CREATE INDEX IF NOT EXISTS idx_flows_value ON exchange_flows(usd_value DESC);
+
+-- ============================================================================
 -- COMPLETE SCHEMA LOADED
 -- ============================================================================
 -- Tables created:
@@ -390,8 +466,15 @@ CREATE INDEX IF NOT EXISTS idx_fear_greed_value ON fear_greed_index(value);
 -- Functions:
 --   - refresh_twitter_volume() (Refresh hourly baselines)
 --
--- Active Scrapers (17 total):
+--   - order_book_depth (Real-time order book for timing execution)
+--   - funding_rates (Perpetual futures rates, reversal signals)
+--   - fear_greed_index (Market sentiment index 0-100)
+--   - liquidations (Flash crash detection, capitulation signals)
+--   - open_interest (Total futures leverage, volatility indicator)
+--   - exchange_flows (Whale movements to/from exchanges)
+--
+-- Active Scrapers (21 total):
 --   Traditional Finance: NewsAPI, RSS, Senate, House, FRED, SEC, FMP, yfinance (8)
 --   Crypto Twitter: Memecoins, Largecaps, DeFi, Layer1s, Layer2s, AI, Emerging, Whales (8)
---   Crypto Price: Binance OHLCV (or alternatives for US users) (1)
+--   Crypto Market Data: OHLCV, Order Book, Funding, Fear/Greed, Liquidations, OI, Flows (7)
 -- ============================================================================

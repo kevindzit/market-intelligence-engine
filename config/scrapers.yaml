@@ -160,6 +160,30 @@ scrapers:
     free_tier: "Free (Alternative.me API)"
     interval: "6 hours"
 
+  - name: Binance Liquidations
+    script: crypto_scrapers/binance_liquidations.py
+    category: crypto
+    description: Real-time liquidations for flash crash/reversal detection
+    enabled: true  # Table created and tested successfully
+    free_tier: "Free (public API)"
+    interval: "30 seconds"
+
+  - name: Exchange Flows
+    script: crypto_scrapers/exchange_flows.py
+    category: crypto
+    description: Whale movements to/from exchanges (BTC focus)
+    enabled: false  # Enable after adding Etherscan API key
+    free_tier: "Free (limited - blockchain.info)"
+    interval: "6 hours"
+
+  - name: Binance Open Interest
+    script: crypto_scrapers/binance_oi.py
+    category: crypto
+    description: Tracks total futures leverage (OI) for volatility prediction
+    enabled: true  # Ready to test
+    free_tier: "Free (public API)"
+    interval: "5 minutes"
+
 # ==================== FUTURE SCRAPERS ====================
 # To add a new scraper, copy this template:
 #
