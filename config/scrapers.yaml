@@ -128,6 +128,22 @@ scrapers:
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "10 minutes"
 
+  - name: Binance OHLCV
+    script: crypto_scrapers/binance_ohlcv.py
+    category: crypto
+    description: 5-minute price candles for all 42 tokens (OHLCV data)
+    enabled: true
+    free_tier: "Free (public API)"
+    interval: "5 minutes"
+
+  - name: Binance Order Book
+    script: crypto_scrapers/binance_orderbook.py
+    category: crypto
+    description: Real-time order book depth for optimal entry/exit timing
+    enabled: true  # Table created and tested successfully
+    free_tier: "Free (public API)"
+    interval: "30 seconds"
+
 # ==================== FUTURE SCRAPERS ====================
 # To add a new scraper, copy this template:
 #

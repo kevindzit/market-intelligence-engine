@@ -291,6 +291,35 @@ CREATE INDEX IF NOT EXISTS idx_ohlcv_token_time ON crypto_ohlcv(token, timestamp
 CREATE INDEX IF NOT EXISTS idx_ohlcv_timeframe ON crypto_ohlcv(timeframe);
 
 -- ============================================================================
+-- TABLE: order_book_depth
+-- Purpose: Stores real-time order book data for optimal entry/exit timing
+-- Scraper: binance_orderbook.py
+-- Features: Top bid/ask levels, liquidity analysis, order book imbalance
+-- Critical for: Avoiding slippage, detecting walls, timing execution
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS order_book_depth (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    best_bid NUMERIC(20,8) NOT NULL,
+    best_ask NUMERIC(20,8) NOT NULL,
+    bid_ask_spread NUMERIC(20,8) NOT NULL,
+    bid_liquidity_1pct NUMERIC(30,8),
+    ask_liquidity_1pct NUMERIC(30,8),
+    order_imbalance NUMERIC(6,4),
+    total_bid_volume NUMERIC(30,8),
+    total_ask_volume NUMERIC(30,8),
+    source VARCHAR(50) DEFAULT 'binance',
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_orderbook_token ON order_book_depth(token);
+CREATE INDEX IF NOT EXISTS idx_orderbook_timestamp ON order_book_depth(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_orderbook_token_time ON order_book_depth(token, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_orderbook_imbalance ON order_book_depth(order_imbalance DESC);
+
+-- ============================================================================
 -- COMPLETE SCHEMA LOADED
 -- ============================================================================
 -- Tables created:
