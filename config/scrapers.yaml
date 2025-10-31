@@ -144,6 +144,22 @@ scrapers:
     free_tier: "Free (public API)"
     interval: "30 seconds"
 
+  - name: Binance Funding Rates
+    script: crypto_scrapers/binance_funding.py
+    category: crypto
+    description: Perpetual futures funding rates for leverage/reversal detection
+    enabled: true  # Table created and tested successfully
+    free_tier: "Free (public API)"
+    interval: "1 hour"
+
+  - name: Fear & Greed Index
+    script: crypto_scrapers/fear_greed_scraper.py
+    category: crypto
+    description: Market psychology indicator (0-100 sentiment score)
+    enabled: true  # Table created and tested successfully
+    free_tier: "Free (Alternative.me API)"
+    interval: "6 hours"
+
 # ==================== FUTURE SCRAPERS ====================
 # To add a new scraper, copy this template:
 #

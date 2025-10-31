@@ -320,6 +320,50 @@ CREATE INDEX IF NOT EXISTS idx_orderbook_token_time ON order_book_depth(token, t
 CREATE INDEX IF NOT EXISTS idx_orderbook_imbalance ON order_book_depth(order_imbalance DESC);
 
 -- ============================================================================
+-- TABLE: funding_rates
+-- Purpose: Tracks perpetual futures funding rates (market leverage indicator)
+-- Scraper: binance_funding.py
+-- Features: Detects overleveraged positions, reversal signals
+-- Critical for: Predicting market tops/bottoms
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS funding_rates (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    funding_rate NUMERIC(10,6) NOT NULL,
+    next_funding_time TIMESTAMP WITH TIME ZONE,
+    mark_price NUMERIC(20,8),
+    index_price NUMERIC(20,8),
+    source VARCHAR(50) DEFAULT 'binance',
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_funding UNIQUE (token, scraped_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_funding_token ON funding_rates(token);
+CREATE INDEX IF NOT EXISTS idx_funding_scraped_at ON funding_rates(scraped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_funding_rate ON funding_rates(funding_rate DESC);
+CREATE INDEX IF NOT EXISTS idx_funding_token_time ON funding_rates(token, scraped_at DESC);
+
+-- ============================================================================
+-- TABLE: fear_greed_index
+-- Purpose: Tracks crypto market sentiment index (0-100)
+-- Scraper: fear_greed_scraper.py
+-- Features: Market psychology indicator for timing decisions
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS fear_greed_index (
+    id SERIAL PRIMARY KEY,
+    value INTEGER NOT NULL,
+    classification VARCHAR(20),
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_fear_greed UNIQUE (timestamp)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fear_greed_timestamp ON fear_greed_index(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_fear_greed_value ON fear_greed_index(value);
+
+-- ============================================================================
 -- COMPLETE SCHEMA LOADED
 -- ============================================================================
 -- Tables created:
