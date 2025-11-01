@@ -1,28 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(powershell -Command \"if (Test-Path ''.env'') { $env = Get-Content .env | Select-String -Pattern ''^[A-Z]'' | ForEach-Object { $_Line -replace ''=.*'', ''=<hidden>'' }; Write-Host ''Environment variables found:''; $env } else { Write-Host ''.env file not found'' }\")",
-      "Bash(powershell -Command \"Get-Content .env | Where-Object { $_-match ''^[A-Z]'' -and $_-match ''='' } | ForEach-Object { ($_-split ''='')[0] + ''=<configured>'' }\")",
-      "Bash(powershell:*)",
-      "Bash(while read path)",
-      "Bash(do if [ ! -f \"$path\" ])",
-      "Bash(then echo \"MISSING: $path\")",
-      "Bash(fi)",
-      "Bash(done)",
-      "Bash(xargs ls:*)",
-      "Bash(pip install:*)",
-      "Bash(python:*)",
-      "Bash(psql:*)",
-      "Bash(docker ps:*)",
-      "Bash(docker logs:*)",
-      "Bash(docker rm:*)",
-      "Bash(docker run:*)",
-      "Bash(docker start:*)",
-      "Bash(C:/venvs/pjxvenv/Scripts/python.exe:*)",
-      "Bash(docker exec:*)",
-      "Bash(docker cp:*)",
-      "Bash(timeout 10 C:/venvs/pjxvenv/Scripts/python.exe:*)",
-      "Bash(C:/venvs/pjxvenv/Scripts/pip.exe install:*)"
+      "Bash(xargs:*)",
+      "Bash(timeout 15 C:/venvs/pjxvenv/Scripts/python.exe:*)",
+      "Bash(timeout 5 C:/venvs/pjxvenv/Scripts/python.exe:*)"
     ],
     "deny": [],
     "ask": []

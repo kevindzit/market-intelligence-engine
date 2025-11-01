@@ -14,7 +14,7 @@ load_dotenv()
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '54594')
-DB_NAME = os.getenv('DB_NAME', 'postgres')
+DB_NAME = os.getenv('DB_NAME', 'pjx')
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 
@@ -22,15 +22,15 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 # TRADING CONFIGURATION
 # ============================================================================
 
-# Tokens to trade (start with highest quality tokens)
-TOKENS_TO_TRADE = [
-    'BTC',
-    'ETH',
-    'SOL'
-]
+# DYNAMIC TOKEN DISCOVERY - No fixed list!
+# The system will automatically discover and trade ANY token that:
+# 1. Has recent Twitter sentiment data
+# 2. Has price data in crypto_ohlcv table
+# 3. Shows interesting activity patterns
+MAX_TOKENS_PER_CYCLE = 20  # Process top 20 most active tokens per cycle
 
 # Decision cycle frequency (in seconds)
-DECISION_INTERVAL = 15 * 60  # 15 minutes
+DECISION_INTERVAL = 30 * 60  # 30 minutes (gives ~1.5 min per token for 20 tokens)
 
 # Trading mode
 PAPER_TRADING = True  # IMPORTANT: Keep True until validated
@@ -108,8 +108,13 @@ VOLUME_LOOKBACK_HOURS = 1  # Volume spikes over last 1 hour
 PRICE_LOOKBACK_HOURS = 24  # Price context over last 24 hours
 
 # Data quality filters
-MIN_TWEET_VOLUME = 10  # Need at least 10 tweets in lookback period
+MIN_TWEET_VOLUME = 5  # Reduced to catch new tokens early
 MIN_WHALE_FOLLOWERS = 5000  # Already filtered in scraper, but double-check
+
+# Dynamic discovery settings
+MIN_ACTIVITY_HOURS = 24  # Look for tokens active in last 24 hours
+TRENDING_SPIKE_THRESHOLD = 2.0  # Volume spike threshold for trending tokens
+NEW_TOKEN_ALERT_HOURS = 1  # Alert for tokens that appeared in last hour
 
 # ============================================================================
 # PROMPT CONFIGURATION

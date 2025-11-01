@@ -23,7 +23,9 @@ duckduckgo-search>=4.0.0
 # AI Trading System packages
 anthropic>=0.72.0
 google-generativeai>=0.8.5
+openai>=1.0.0  # For DeepSeek ensemble
 websockets>=15.0.0
+numpy>=1.24.0  # For data analysis
 
 # Financial data packages
 fredapi>=0.5.1
