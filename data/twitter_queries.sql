@@ -1,6 +1,112 @@
 -- ============================================================
--- TWITTER DATA QUERIES
--- Quick reference for analyzing Twitter sentiment data
+-- PJX DATABASE QUERIES
+-- Quick reference for viewing all collected data
+-- ============================================================
+
+-- ============================================================
+-- ALL TABLES OVERVIEW
+-- ============================================================
+
+-- ------------------------------------------------------------
+-- CRYPTO MARKET DATA
+-- ------------------------------------------------------------
+
+-- Twitter Sentiment (37 tokens + 38 whale accounts)
+SELECT * FROM twitter_sentiment ORDER BY scraped_at DESC LIMIT 50;
+SELECT COUNT(*) as total_tweets FROM twitter_sentiment;
+
+-- Price Data (OHLCV - 5-minute candles)
+SELECT * FROM crypto_ohlcv ORDER BY timestamp DESC LIMIT 50;
+SELECT COUNT(*) as total_candles FROM crypto_ohlcv;
+SELECT token, COUNT(*) as candles FROM crypto_ohlcv GROUP BY token ORDER BY token;
+
+-- Order Book Depth (bid/ask spreads)
+SELECT * FROM order_book_depth ORDER BY timestamp DESC LIMIT 50;
+SELECT COUNT(*) as total_snapshots FROM order_book_depth;
+SELECT token, COUNT(*) as snapshots FROM order_book_depth GROUP BY token ORDER BY token;
+
+-- Funding Rates (perpetual futures)
+SELECT * FROM funding_rates ORDER BY scraped_at DESC LIMIT 50;
+SELECT COUNT(*) as total_rates FROM funding_rates;
+SELECT token, AVG(funding_rate) as avg_rate FROM funding_rates GROUP BY token ORDER BY token;
+
+-- Fear & Greed Index (market psychology)
+SELECT * FROM fear_greed_index ORDER BY timestamp DESC LIMIT 50;
+SELECT COUNT(*) as total_readings FROM fear_greed_index;
+
+-- Liquidations (flash crash signals)
+SELECT * FROM liquidations ORDER BY timestamp DESC LIMIT 50;
+SELECT COUNT(*) as total_liquidations FROM liquidations;
+SELECT token, SUM(liquidation_value) as total_liq FROM liquidations GROUP BY token ORDER BY total_liq DESC;
+
+-- Open Interest (futures leverage)
+SELECT * FROM open_interest ORDER BY timestamp DESC LIMIT 50;
+SELECT COUNT(*) as total_oi_records FROM open_interest;
+SELECT token, AVG(open_interest_usd) as avg_oi FROM open_interest GROUP BY token ORDER BY avg_oi DESC;
+
+-- Exchange Flows (whale movements)
+SELECT * FROM exchange_flows ORDER BY timestamp DESC LIMIT 50;
+SELECT COUNT(*) as total_flows FROM exchange_flows;
+SELECT token, flow_type, SUM(usd_value) as total_value FROM exchange_flows GROUP BY token, flow_type ORDER BY token;
+
+
+-- ------------------------------------------------------------
+-- TRADITIONAL FINANCE DATA
+-- ------------------------------------------------------------
+
+-- News Articles (NewsAPI + RSS feeds)
+SELECT * FROM news_articles ORDER BY published_at DESC LIMIT 50;
+SELECT COUNT(*) as total_articles FROM news_articles;
+SELECT source, COUNT(*) as articles FROM news_articles GROUP BY source ORDER BY articles DESC;
+
+-- Congressional Trades (Senate + House)
+SELECT * FROM congressional_trades ORDER BY transaction_date DESC LIMIT 50;
+SELECT COUNT(*) as total_trades FROM congressional_trades;
+SELECT politician_name, COUNT(*) as trades FROM congressional_trades GROUP BY politician_name ORDER BY trades DESC;
+
+-- Economic Indicators (FRED API)
+SELECT * FROM economic_indicators ORDER BY date DESC LIMIT 50;
+SELECT COUNT(*) as total_indicators FROM economic_indicators;
+SELECT indicator_name, COUNT(*) as readings FROM economic_indicators GROUP BY indicator_name ORDER BY indicator_name;
+
+-- SEC Filings (EDGAR RSS)
+SELECT * FROM sec_filings ORDER BY filing_date DESC LIMIT 50;
+SELECT COUNT(*) as total_filings FROM sec_filings;
+SELECT filing_type, COUNT(*) as filings FROM sec_filings GROUP BY filing_type ORDER BY filings DESC;
+
+-- Company Fundamentals (FMP + yfinance)
+SELECT * FROM company_profiles ORDER BY last_updated DESC LIMIT 50;
+SELECT COUNT(*) as total_companies FROM company_profiles;
+
+
+-- ------------------------------------------------------------
+-- AI TRADING SYSTEM (Future Use)
+-- ------------------------------------------------------------
+
+-- Trading Decisions (AI model outputs)
+SELECT * FROM trading_decisions ORDER BY decision_time DESC LIMIT 50;
+SELECT COUNT(*) as total_decisions FROM trading_decisions;
+
+-- Ensemble Votes (multi-model voting)
+SELECT * FROM ensemble_votes ORDER BY vote_time DESC LIMIT 50;
+SELECT COUNT(*) as total_votes FROM ensemble_votes;
+
+-- Portfolio State (positions & P&L)
+SELECT * FROM portfolio_state ORDER BY snapshot_time DESC LIMIT 50;
+SELECT COUNT(*) as total_snapshots FROM portfolio_state;
+
+-- Paper Trades (execution log)
+SELECT * FROM paper_trades ORDER BY execution_time DESC LIMIT 50;
+SELECT COUNT(*) as total_trades FROM paper_trades;
+SELECT action, COUNT(*) as trades FROM paper_trades GROUP BY action;
+
+-- Circuit Breaker Events (risk management)
+SELECT * FROM circuit_breaker_events ORDER BY event_time DESC LIMIT 50;
+SELECT COUNT(*) as total_events FROM circuit_breaker_events;
+
+
+-- ============================================================
+-- DETAILED TWITTER SENTIMENT QUERIES
 -- ============================================================
 
 -- ------------------------------------------------------------

@@ -21,7 +21,7 @@ scrapers:
 
   # ==================== CONGRESSIONAL TRADES ====================
   - name: Senate Scraper
-    script: senate_scraper/senate_scraper.py
+    script: fundamentals_data/senate_scraper.py
     category: congressional
     description: Scrapes Senate trade disclosures
     enabled: true  # TESTING: Enabled for full system test
@@ -29,7 +29,7 @@ scrapers:
     interval: "daily"
 
   - name: House Scraper
-    script: house_scraper/house_scraper.py
+    script: fundamentals_data/house_scraper.py
     category: congressional
     description: Scrapes House trade disclosures
     enabled: true  # TESTING: Enabled for full system test
@@ -38,7 +38,7 @@ scrapers:
 
   # ==================== ECONOMIC DATA ====================
   - name: FRED Economic Data
-    script: data_api/fred_data_reader.py
+    script: fundamentals_data/fred_data_reader.py
     category: economic
     description: Fetches macroeconomic indicators from FRED
     enabled: true  # TESTING: Enabled for full system test
@@ -47,7 +47,7 @@ scrapers:
 
   # ==================== SEC FILINGS ====================
   - name: SEC EDGAR Reader
-    script: sec_data/edgar_rss_reader.py
+    script: fundamentals_data/edgar_rss_reader.py
     category: sec
     description: Monitors SEC EDGAR RSS for new filings
     enabled: true  # TESTING: Enabled for full system test

@@ -14,7 +14,7 @@ import requests
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-load_dotenv()
+load_dotenv(override=True)
 
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')

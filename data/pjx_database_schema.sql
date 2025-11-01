@@ -440,6 +440,192 @@ CREATE INDEX IF NOT EXISTS idx_flows_type ON exchange_flows(flow_type);
 CREATE INDEX IF NOT EXISTS idx_flows_value ON exchange_flows(usd_value DESC);
 
 -- ============================================================================
+-- AI TRADING SYSTEM TABLES
+-- ============================================================================
+-- Purpose: Support Claude-based AI trading with tiered verification
+-- Architecture: Tier 1 (Claude screening) → Tier 2 (Ensemble verification for BUY)
+-- Paper trading first, then gradual live deployment
+-- ============================================================================
+
+-- ============================================================================
+-- TABLE: trading_decisions
+-- Purpose: Logs every trading decision made by AI system
+-- Tier 1: Claude Sonnet 4 initial screening (all signals)
+-- Tier 2: 3-model ensemble verification (BUY signals only)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS trading_decisions (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    decision_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    -- Tier 1 Decision (Claude initial screening)
+    tier1_action VARCHAR(10),
+    tier1_confidence NUMERIC(5,4),
+    tier1_reasoning TEXT,
+
+    -- Tier 2 Decision (Ensemble verification for BUY signals)
+    tier2_triggered BOOLEAN DEFAULT false,
+    tier2_action VARCHAR(10),
+    tier2_confidence NUMERIC(5,4),
+    tier2_consensus_score NUMERIC(5,4),
+
+    -- Final Decision (what was actually executed)
+    final_action VARCHAR(10) NOT NULL,
+    final_confidence NUMERIC(5,4),
+
+    -- Trade Parameters
+    position_size_pct NUMERIC(5,2),
+    position_size_usd NUMERIC(12,2),
+    entry_price NUMERIC(20,8),
+    stop_loss NUMERIC(20,8),
+    take_profit NUMERIC(20,8),
+
+    -- Market Context (snapshot of data at decision time)
+    sentiment_summary JSONB,
+    price_context JSONB,
+
+    -- Execution Status
+    status VARCHAR(20) DEFAULT 'PENDING',
+    executed_at TIMESTAMP WITH TIME ZONE,
+    rejected_reason TEXT,
+
+    -- Performance Tracking
+    outcome VARCHAR(20),
+    exit_price NUMERIC(20,8),
+    pnl_usd NUMERIC(12,2),
+    pnl_pct NUMERIC(8,4),
+    closed_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_decisions_token ON trading_decisions(token);
+CREATE INDEX IF NOT EXISTS idx_decisions_time ON trading_decisions(decision_time DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_status ON trading_decisions(status);
+CREATE INDEX IF NOT EXISTS idx_decisions_outcome ON trading_decisions(outcome);
+
+-- ============================================================================
+-- TABLE: ensemble_votes
+-- Purpose: Tracks individual model votes for Tier 2 ensemble verification
+-- Models: Claude Sonnet 4, DeepSeek R1, Gemini 2.5 Flash
+-- Weighted voting: 40%, 35%, 25% respectively
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS ensemble_votes (
+    id SERIAL PRIMARY KEY,
+    decision_id INTEGER REFERENCES trading_decisions(id),
+    model_name VARCHAR(50) NOT NULL,
+    vote VARCHAR(10) NOT NULL,
+    confidence NUMERIC(5,4),
+    reasoning TEXT,
+    response_time_ms INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_votes_decision ON ensemble_votes(decision_id);
+CREATE INDEX IF NOT EXISTS idx_votes_model ON ensemble_votes(model_name);
+
+-- ============================================================================
+-- TABLE: portfolio_state
+-- Purpose: Tracks current portfolio state (updated after each trading cycle)
+-- Initial: $10,000 paper trading capital
+-- Tracks: positions, P&L, win rate, circuit breaker status
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS portfolio_state (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    -- Portfolio Value
+    total_value NUMERIC(12,2) NOT NULL,
+    cash NUMERIC(12,2) NOT NULL,
+    positions_value NUMERIC(12,2) DEFAULT 0,
+
+    -- Current Positions (JSONB for flexibility)
+    positions JSONB DEFAULT '{}',
+
+    -- Performance Metrics
+    daily_pnl NUMERIC(12,2) DEFAULT 0,
+    total_pnl NUMERIC(12,2) DEFAULT 0,
+    total_pnl_pct NUMERIC(8,4) DEFAULT 0,
+
+    -- Risk Metrics
+    max_drawdown NUMERIC(8,4) DEFAULT 0,
+    current_drawdown NUMERIC(8,4) DEFAULT 0,
+
+    -- Trade Statistics
+    total_trades INTEGER DEFAULT 0,
+    winning_trades INTEGER DEFAULT 0,
+    losing_trades INTEGER DEFAULT 0,
+    win_rate NUMERIC(5,4) DEFAULT 0,
+
+    -- Circuit Breaker State
+    trading_halted BOOLEAN DEFAULT false,
+    halt_reason TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_time ON portfolio_state(timestamp DESC);
+
+-- ============================================================================
+-- TABLE: paper_trades
+-- Purpose: Tracks all paper trade executions (entries and exits)
+-- Simulates realistic trading with fees and slippage
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id SERIAL PRIMARY KEY,
+    decision_id INTEGER REFERENCES trading_decisions(id),
+    token VARCHAR(20) NOT NULL,
+
+    -- Trade Details
+    side VARCHAR(10) NOT NULL,
+    quantity NUMERIC(20,8) NOT NULL,
+    price NUMERIC(20,8) NOT NULL,
+    value_usd NUMERIC(12,2) NOT NULL,
+
+    -- Fees (simulate realistic trading costs)
+    fee_pct NUMERIC(5,4) DEFAULT 0.001,
+    fee_usd NUMERIC(12,2),
+
+    -- Timing
+    executed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+
+    -- For tracking paired entry/exit
+    trade_pair_id INTEGER,
+    is_entry BOOLEAN,
+
+    -- P&L (calculated on exit)
+    pnl_usd NUMERIC(12,2),
+    pnl_pct NUMERIC(8,4),
+
+    -- Market context at execution
+    slippage_pct NUMERIC(5,4),
+    spread_pct NUMERIC(5,4)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_token ON paper_trades(token);
+CREATE INDEX IF NOT EXISTS idx_trades_time ON paper_trades(executed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_trades_decision ON paper_trades(decision_id);
+
+-- ============================================================================
+-- TABLE: circuit_breaker_events
+-- Purpose: Logs when circuit breakers are triggered
+-- Breakers: Daily drawdown >10%, 5 consecutive losses, max daily trades
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS circuit_breaker_events (
+    id SERIAL PRIMARY KEY,
+    event_type VARCHAR(50) NOT NULL,
+    triggered_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    reason TEXT NOT NULL,
+    portfolio_value NUMERIC(12,2),
+    daily_drawdown NUMERIC(8,4),
+    consecutive_losses INTEGER,
+    auto_resume_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_breaker_time ON circuit_breaker_events(triggered_at DESC);
+
+-- ============================================================================
 -- COMPLETE SCHEMA LOADED
 -- ============================================================================
 -- Tables created:
@@ -472,9 +658,21 @@ CREATE INDEX IF NOT EXISTS idx_flows_value ON exchange_flows(usd_value DESC);
 --   - liquidations (Flash crash detection, capitulation signals)
 --   - open_interest (Total futures leverage, volatility indicator)
 --   - exchange_flows (Whale movements to/from exchanges)
+--   - trading_decisions (AI trading decision log, Tier 1 + Tier 2 decisions)
+--   - ensemble_votes (Individual model votes for ensemble verification)
+--   - portfolio_state (Current positions, P&L, win rate, circuit breakers)
+--   - paper_trades (Trade execution history with fees and slippage)
+--   - circuit_breaker_events (Risk management event log)
 --
 -- Active Scrapers (21 total):
 --   Traditional Finance: NewsAPI, RSS, Senate, House, FRED, SEC, FMP, yfinance (8)
 --   Crypto Twitter: Memecoins, Largecaps, DeFi, Layer1s, Layer2s, AI, Emerging, Whales (8)
 --   Crypto Market Data: OHLCV, Order Book, Funding, Fear/Greed, Liquidations, OI, Flows (7)
+--
+-- AI Trading System:
+--   Architecture: Tiered verification (Claude Tier 1 → Ensemble Tier 2)
+--   Tier 1: Claude Sonnet 4 screening (all signals, <1s, $0.003/signal)
+--   Tier 2: 3-model ensemble for BUY signals (Claude + DeepSeek + Gemini)
+--   Paper trading: $10,000 initial capital, realistic fees/slippage
+--   Risk management: Position limits, circuit breakers, stop-loss/take-profit
 -- ============================================================================

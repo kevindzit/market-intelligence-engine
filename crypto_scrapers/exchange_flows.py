@@ -15,7 +15,7 @@ import psycopg2
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-load_dotenv()
+load_dotenv(override=True)
 
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -169,9 +169,10 @@ class ExchangeFlowScraper:
             # Major Binance ETH hot wallet
             address = '0x28C6c06298d514Db089934071355E5743bf21d60'
 
-            # Get last 10 transactions (Etherscan free tier allows this)
-            url = 'https://api.etherscan.io/api'
+            # Get last 10 transactions (Etherscan V2 API)
+            url = 'https://api.etherscan.io/v2/api'
             params = {
+                'chainid': 1,  # Ethereum mainnet
                 'module': 'account',
                 'action': 'txlist',
                 'address': address,

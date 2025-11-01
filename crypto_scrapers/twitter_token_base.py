@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-load_dotenv()
+load_dotenv(override=True)
 
 from monitors.health_monitor import HealthMonitor
 from nice_funcs.twitter_funcs import (

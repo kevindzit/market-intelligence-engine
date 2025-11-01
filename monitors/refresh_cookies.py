@@ -58,8 +58,8 @@ def refresh_cookies(headless=False, account_email=None, account_password=None, a
     # Initialize undetected Chrome driver
     driver = None
     try:
-        # Use version 141 to match current Chrome installation
-        driver = uc.Chrome(options=options, version_main=141, use_subprocess=True)
+        # Auto-detect Chrome version (no hardcoding to prevent version mismatch)
+        driver = uc.Chrome(options=options, use_subprocess=True)
 
         # Automated login if credentials provided
         if account_email and account_password:

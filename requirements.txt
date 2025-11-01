@@ -4,6 +4,7 @@ psycopg2-binary>=2.9.9
 # Web scraping packages
 selenium>=4.15.0
 webdriver-manager>=4.0.1
+undetected-chromedriver>=3.5.5
 beautifulsoup4>=4.12.2
 pdfplumber>=0.10.3
 
@@ -18,6 +19,11 @@ crewai>=0.1.0
 crewai-tools>=0.1.0
 langchain>=0.1.0
 duckduckgo-search>=4.0.0
+
+# AI Trading System packages
+anthropic>=0.72.0
+google-generativeai>=0.8.5
+websockets>=15.0.0
 
 # Financial data packages
 fredapi>=0.5.1
@@ -34,8 +40,13 @@ vaderSentiment>=3.3.2
 # Utilities
 python-dotenv>=1.0.0
 httpx>=0.28.0
+setuptools>=75.0.0
+
+# Crypto exchange API
+ccxt>=4.4.72
 
 # Optional: Uncomment for BERTweet approach (not recommended - 130x slower than VADER)
 # torch>=2.7.0
 # transformers>=4.57.0
-# emoji==0.6.0ccxt==4.4.72
+# emoji==0.6.0
+

@@ -4,6 +4,8 @@ Instructions for Claude Code on the PJX Crypto Trading System.
 
 ---
 
+use this venv: "C:\venvs\pjxvenv"
+
 ## Current Project Focus
 
 **PRIMARY GOAL: Collect the richest possible crypto market data**
