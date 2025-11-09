@@ -2,7 +2,9 @@ import psycopg2
 import re
 import time
 import logging
+import os
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -11,22 +13,21 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+# Load environment variables
+load_dotenv()
+
 # --- DATABASE DETAILS ---
-# Password confirmed from your Docker inspect
-DB_NAME = "postgres"
-DB_USER = "postgres"
-DB_PASS = "postgres"
-DB_HOST = "localhost" 
-# --- THIS IS THE FIX ---
-# Using the external port from your Docker setup
-DB_PORT = "54594" 
+DB_NAME = os.getenv('DB_NAME', 'pjx')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASS = os.getenv('DB_PASSWORD', 'postgres')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '54594') 
 
 # --- CONFIGURATION ---
+# Only track actual buy/sell transactions (Periodic Transaction Reports)
+# Annual/Candidate/Termination reports have different table structures (holdings, not transactions)
 TARGET_REPORT_TYPES = [
-    "Periodic Transaction Report",
-    "Annual Report",
-    "Candidate Report",
-    "Termination Report"
+    "Periodic Transaction Report"
 ]
 
 def setup_logging():
@@ -147,7 +148,15 @@ def scrape_senate_disclosures(days_to_search=10):
                     continue
 
                 filer_name_header = driver.find_element(By.TAG_NAME, "h1").text
-                filing_date_element = driver.find_element(By.XPATH, "//*[contains(text(), 'Filed')]").text
+                filing_date_element = "Filed: Unknown"
+                try:
+                    filing_date_element = driver.find_element(By.XPATH, "//*[contains(text(), 'Filed')]").text
+                except NoSuchElementException:
+                    alt_candidates = driver.find_elements(By.XPATH, "//p[contains(text(), 'Filed')]")
+                    if alt_candidates:
+                        filing_date_element = alt_candidates[0].text
+                    else:
+                        logging.warning(f"Filed date element missing for {link}, defaulting to 'Unknown'")
                 
                 transaction_rows = transaction_table.find_elements(By.XPATH, ".//tbody/tr")
                 for row in transaction_rows:

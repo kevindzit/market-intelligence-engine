@@ -7,6 +7,7 @@ import re
 import time
 from datetime import datetime
 import psycopg2
+from dotenv import load_dotenv
 from xml.etree import ElementTree as ET
 import pdfplumber
 from selenium import webdriver
@@ -17,12 +18,15 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+# Load environment variables
+load_dotenv()
+
 # --- DATABASE DETAILS ---
-DB_NAME = "postgres"
-DB_USER = "postgres"
-DB_PASS = "postgres"
-DB_HOST = "localhost"
-DB_PORT = "54594"
+DB_NAME = os.getenv('DB_NAME', 'pjx')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASS = os.getenv('DB_PASSWORD', 'postgres')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '54594')
 
 # --- CONFIGURATION ---
 DATA_DIR = "house_data"

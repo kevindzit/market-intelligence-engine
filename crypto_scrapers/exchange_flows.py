@@ -28,7 +28,7 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY', '')
 
 # Scraper configuration
-UPDATE_INTERVAL = 6 * 60 * 60  # 6 hours (within free tier limits)
+UPDATE_INTERVAL = 1 * 60 * 60  # 1 hour (well within free tier: blockchain.info + Etherscan 100k calls/day)
 
 # Focus on top 3 tokens for free tier
 TOKENS_TO_TRACK = ['BTC', 'ETH', 'SOL']

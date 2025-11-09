@@ -16,6 +16,20 @@ from datetime import datetime
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from pathlib import Path
 
+
+def _force_utf8_io():
+    """Ensure stdout/stderr use UTF-8 to avoid Windows charmap crashes."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except Exception:
+                pass
+
+
+_force_utf8_io()
+
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from monitors.refresh_cookies import refresh_cookies, save_cookies
@@ -388,6 +402,65 @@ def init_twitter_client(cookies_path="cookies/cookies.json"):
         print(f"[ERROR] Twitter client init failed: {e}")
         sys.exit(1)
 
+def _acquire_single_account_lock(cookies_path, timeout=120):
+    """
+    Acquire lock for single-account mode cookie refresh
+
+    Args:
+        cookies_path: Path to cookies.json
+        timeout: Max seconds to wait
+
+    Returns:
+        tuple: (acquired: bool, should_refresh: bool)
+    """
+    import time
+    lock_file = Path(str(cookies_path) + ".lock")
+    start_time = time.time()
+
+    while True:
+        if not lock_file.exists():
+            try:
+                lock_file.write_text(f"{os.getpid()}\n{datetime.now().isoformat()}")
+                time.sleep(0.1)
+                if lock_file.exists():
+                    content = lock_file.read_text().strip()
+                    if content.startswith(str(os.getpid())):
+                        return (True, True)
+            except:
+                pass
+
+        # Check for stale lock
+        try:
+            if lock_file.exists():
+                content = lock_file.read_text().strip()
+                lines = content.split('\n')
+                if len(lines) >= 2:
+                    lock_time = datetime.fromisoformat(lines[1])
+                    age = (datetime.now() - lock_time).total_seconds()
+                    if age > 120:
+                        print(f"[Cookie Lock] Stale lock detected, removing...")
+                        lock_file.unlink()
+                        continue
+        except:
+            pass
+
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            print(f"[Cookie Lock] Timeout waiting for lock")
+            return (False, False)
+
+        print(f"[Cookie Lock] Waiting for another process to refresh... ({elapsed:.0f}s)")
+        time.sleep(5)
+
+def _release_single_account_lock(cookies_path):
+    """Release single-account lock"""
+    lock_file = Path(str(cookies_path) + ".lock")
+    try:
+        if lock_file.exists():
+            lock_file.unlink()
+    except:
+        pass
+
 def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
     """Refresh cookies by extracting them from Chrome and creating a fresh client
 
@@ -403,6 +476,15 @@ def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
     """
     import time
     from twikit import Client
+    from dotenv import load_dotenv
+    orchestrator_mode = os.getenv('ORCHESTRATOR_RUNNING', 'false').lower() == 'true'
+    max_attempts = int(os.getenv('TWITTER_COOKIE_REFRESH_RETRIES', 10))
+    headless_cutover = max(max_attempts - 3, 0)
+
+    def should_use_headless(attempt):
+        if orchestrator_mode:
+            return False  # Always show Chrome window when orchestrated
+        return attempt <= headless_cutover if headless_cutover > 0 else False
 
     # Check if this client is from the account pool
     try:
@@ -413,10 +495,10 @@ def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
         if account_num is not None:
             # This is a pooled account - refresh it properly
             print(f"[AUTO-REFRESH] Detected Account {account_num} needs refresh")
-            print(f"[AUTO-REFRESH] Please ensure Account {account_num} is logged into Chrome")
+            print(f"[AUTO-REFRESH] Please ensure Account {account_num} is logged into Chrome" if not orchestrator_mode else "[AUTO-REFRESH] Headless refresh requested")
             print(f"[AUTO-REFRESH] Extracting fresh cookies...")
 
-            success = account_pool.refresh_account(account_num)
+            success = account_pool.refresh_account(account_num, max_attempts=max_attempts)
 
             if success:
                 # Get the refreshed client from the pool
@@ -436,27 +518,99 @@ def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
     except Exception as e:
         print(f"[AUTO-REFRESH] Pool check failed: {e}, falling back to single-account mode")
 
-    # Single-account mode (fallback)
+    # Single-account mode (fallback) with locking
     print(f"[AUTO-REFRESH] Using single-account mode")
+
+    # Load credentials from .env
+    load_dotenv(override=True)
+    account_email = os.getenv('TWITTER_ACCOUNT1_EMAIL')
+    account_password = os.getenv('TWITTER_PASSWORD')
+    account_username = os.getenv('TWITTER_ACCOUNT1_USERNAME')
+
+    print(f"[AUTO-REFRESH] Credentials loaded:")
+    print(f"[AUTO-REFRESH]   Email: {account_email}")
+    print(f"[AUTO-REFRESH]   Username: {account_username}")
+    print(f"[AUTO-REFRESH]   Password: {'SET' if account_password else 'NOT SET'}")
+
+    cookies_path = Path(cookies_path)
+    prev_mtime = None
+    if cookies_path.exists():
+        try:
+            prev_mtime = cookies_path.stat().st_mtime
+        except OSError:
+            prev_mtime = None
+    acquired, should_refresh = _acquire_single_account_lock(cookies_path, timeout=180)
+
     try:
-        cookies = refresh_cookies(headless=False)
-        if cookies and save_cookies(cookies):
-            # CRITICAL: Create a completely new client instance to avoid cached state
-            print(f"[AUTO-REFRESH] ✓ Cookies saved, creating fresh client instance...")
-            new_client = Client('en-US')
-            new_client.load_cookies(cookies_path)
-
-            # Wait a moment for session to stabilize
-            time.sleep(2)
-
-            print(f"[AUTO-REFRESH] ✓ New client created successfully!")
-            return new_client
-        else:
-            print(f"[AUTO-REFRESH] ✗ Failed to extract/save cookies")
+        if not acquired and not should_refresh:
+            print(f"[AUTO-REFRESH] ✗ Timeout waiting for cookie refresh lock. Will retry.")
             return None
+
+        if should_refresh:
+            # We got the lock - do the refresh
+            print(f"[AUTO-REFRESH] [LOCK ACQUIRED] This process will refresh cookies")
+            print(f"[AUTO-REFRESH] Using credentials for: {account_email}")
+
+            cookies = None
+            for attempt in range(1, max_attempts + 1):
+                use_headless = should_use_headless(attempt)
+                mode_label = "headless" if use_headless else "interactive"
+                print(f"[AUTO-REFRESH] Attempt {attempt}/{max_attempts} ({mode_label})")
+
+                cookies = refresh_cookies(
+                    headless=use_headless,
+                    account_email=account_email,
+                    account_password=account_password,
+                    account_username=account_username
+                )
+
+                if cookies:
+                    break
+
+                wait_seconds = min(5 * attempt, 30)
+                print(f"[AUTO-REFRESH] Attempt {attempt} failed. Retrying in {wait_seconds}s...")
+                time.sleep(wait_seconds)
+
+            if not cookies:
+                print(f"[AUTO-REFRESH] ✗ Failed to extract cookies after {max_attempts} attempts")
+                return None
+
+            if not save_cookies(cookies):
+                print(f"[AUTO-REFRESH] ✗ Failed to save cookies")
+                return None
+
+            try:
+                new_mtime = cookies_path.stat().st_mtime
+            except OSError:
+                new_mtime = None
+            if new_mtime and prev_mtime and new_mtime == prev_mtime:
+                print(f"[AUTO-REFRESH] ⚠ Cookie file timestamp did not change - verify refresh succeeded")
+            else:
+                print(f"[AUTO-REFRESH] ✓ Cookies saved")
+        else:
+            # Another process refreshed - just reload
+            print(f"[AUTO-REFRESH] [WAIT COMPLETE] Another process refreshed, reloading...")
+
+        # Create new client with fresh cookies (either we just saved them, or another process did)
+        new_client = Client('en-US')
+        if not cookies_path.exists():
+            print(f"[AUTO-REFRESH] ✗ Cookie file not found at {cookies_path}")
+            return None
+
+        new_client.load_cookies(str(cookies_path))
+        time.sleep(2)
+
+        print(f"[AUTO-REFRESH] ✓ New client created successfully!")
+        return new_client
+
     except Exception as e:
         print(f"[AUTO-REFRESH] ✗ Error: {e}")
         return None
+
+    finally:
+        if acquired:
+            _release_single_account_lock(cookies_path)
+            print(f"[AUTO-REFRESH] [LOCK RELEASED]")
 
 def get_pooled_client():
     """Get a Twitter client from the account pool (with fallback to single account)
@@ -777,3 +931,63 @@ def update_whale_sentiment_history(sentiment_history_dict, token, sentiment, twe
     # Keep only last 3 cycles
     if len(sentiment_history_dict[token]) > 3:
         sentiment_history_dict[token] = sentiment_history_dict[token][-3:]
+
+
+def validate_sentiment_data(sentiment_score, bot_probability, pump_score,
+                            influence_weight, volume_spike, token=None):
+    """Validate and clamp sentiment-related metrics to valid ranges
+
+    This function ensures all sentiment data is within valid bounds before
+    inserting to database. Uses lenient approach: clamps out-of-range values
+    instead of rejecting them, and logs warnings for transparency.
+
+    Args:
+        sentiment_score: VADER sentiment score (should be -1.0 to 1.0)
+        bot_probability: Bot detection score (should be 0.0 to 1.0)
+        pump_score: Pump pattern score (should be 0.0 to 1.0)
+        influence_weight: Yale engagement coefficient (should be 0.0 to 1.0)
+        volume_spike: Volume spike ratio (should be >= 0.0)
+        token: Optional token name for logging
+
+    Returns:
+        dict: Validated values with all metrics clamped to valid ranges
+    """
+    validated = {}
+    token_label = f"[{token}] " if token else ""
+
+    # Validate sentiment_score (-1.0 to 1.0)
+    if sentiment_score < -1.0 or sentiment_score > 1.0:
+        print(f"[WARNING] {token_label}Sentiment score {sentiment_score:.4f} out of range, clamping to [-1, 1]")
+        validated['sentiment_score'] = max(-1.0, min(1.0, sentiment_score))
+    else:
+        validated['sentiment_score'] = sentiment_score
+
+    # Validate bot_probability (0.0 to 1.0)
+    if bot_probability < 0.0 or bot_probability > 1.0:
+        print(f"[WARNING] {token_label}Bot probability {bot_probability:.4f} out of range, clamping to [0, 1]")
+        validated['bot_probability'] = max(0.0, min(1.0, bot_probability))
+    else:
+        validated['bot_probability'] = bot_probability
+
+    # Validate pump_score (0.0 to 1.0)
+    if pump_score < 0.0 or pump_score > 1.0:
+        print(f"[WARNING] {token_label}Pump score {pump_score:.4f} out of range, clamping to [0, 1]")
+        validated['pump_score'] = max(0.0, min(1.0, pump_score))
+    else:
+        validated['pump_score'] = pump_score
+
+    # Validate influence_weight (0.0 to 1.0)
+    if influence_weight < 0.0 or influence_weight > 1.0:
+        print(f"[WARNING] {token_label}Influence weight {influence_weight:.4f} out of range, clamping to [0, 1]")
+        validated['influence_weight'] = max(0.0, min(1.0, influence_weight))
+    else:
+        validated['influence_weight'] = influence_weight
+
+    # Validate volume_spike (>= 0.0)
+    if volume_spike < 0.0:
+        print(f"[WARNING] {token_label}Volume spike {volume_spike:.2f} is negative, setting to 0.0")
+        validated['volume_spike'] = 0.0
+    else:
+        validated['volume_spike'] = volume_spike
+
+    return validated

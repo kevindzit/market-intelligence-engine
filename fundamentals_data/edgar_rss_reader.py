@@ -4,8 +4,13 @@ import schedule
 import time
 import psycopg2
 import re
+import os
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 import requests # Import the requests library
+
+# Load environment variables
+load_dotenv()
 
 # --- Configuration ---
 # SEC RSS feed for the 100 latest filings
@@ -21,11 +26,11 @@ REQUEST_HEADERS = {
 }
 
 # PostgreSQL Connection Details
-DB_NAME = "postgres"
-DB_USER = "postgres"
-DB_PASS = "postgres"
-DB_HOST = "localhost"
-DB_PORT = "54594"
+DB_NAME = os.getenv('DB_NAME', 'pjx')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASS = os.getenv('DB_PASSWORD', 'postgres')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '54594')
 
 # --- Optional: Filter for specific form types ---
 # Leave this list empty [] to capture ALL form types.

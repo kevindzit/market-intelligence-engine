@@ -21,7 +21,7 @@ import ccxt
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '54594')
-DB_NAME = os.getenv('DB_NAME', 'postgres')
+DB_NAME = os.getenv('DB_NAME', 'pjx')
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 
@@ -52,14 +52,16 @@ class OrderBookScraper:
         self.db_conn = None
         self.failed_tokens = set()
         self.cycle_count = 0
+        self.cycles_with_no_data = 0  # Track consecutive empty cycles
 
     def init_exchange(self):
         """Initialize Binance connection"""
         self.exchange = ccxt.binance({
             'enableRateLimit': True,
+            'timeout': 5000,  # Reduced to 5 second timeout for faster recovery
             'options': {'defaultType': 'spot'}
         })
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connected to Binance API")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Connected to Binance API (5s timeout)")
 
     def init_db(self):
         """Initialize database connection"""
@@ -143,13 +145,17 @@ class OrderBookScraper:
             error_msg = str(e).lower()
 
             if 'symbol' in error_msg or 'not found' in error_msg:
-                print(f"[WARNING] {symbol} not available")
+                print(f"[WARNING] {symbol} not available on Binance - skipping")
                 self.failed_tokens.add(symbol)
-            elif 'rate' in error_msg:
-                print(f"[WARNING] Rate limit hit, slowing down...")
-                time.sleep(3)
+            elif 'timeout' in error_msg or 'timed out' in error_msg:
+                print(f"[WARNING] Timeout fetching {symbol} (5s limit exceeded), will retry next cycle...")
+                # Don't add to failed_tokens for timeout errors - transient issue
+            elif 'rate' in error_msg or 'limit' in error_msg:
+                print(f"[WARNING] Rate limit hit for {symbol}, backing off...")
+                time.sleep(2)  # Reduced from 3 to 2 seconds
             else:
-                print(f"[ERROR] Failed to fetch {symbol}: {e}")
+                # Don't add to failed_tokens for transient errors
+                print(f"[ERROR] Failed to fetch {symbol}: {e} (will retry)")
 
             return None
 
@@ -195,6 +201,18 @@ class OrderBookScraper:
         print(f"\n{'='*70}")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Order Book Cycle #{self.cycle_count}")
         print(f"Fetching depth for {len(TOKENS) - len(self.failed_tokens)} active tokens")
+
+        # Clear failed tokens every 3 cycles to give them another chance (more frequent retries)
+        if self.cycle_count % 3 == 0 and self.failed_tokens:
+            print(f"[INFO] Clearing {len(self.failed_tokens)} failed tokens for retry")
+            self.failed_tokens.clear()
+
+        # Force recovery if all tokens have failed
+        if len(self.failed_tokens) >= len(TOKENS):
+            print(f"[FORCE RECOVERY] All {len(TOKENS)} tokens failed - clearing for retry")
+            self.failed_tokens.clear()
+            self.init_exchange()  # Reconnect to exchange
+
         print('='*70)
 
         all_records = []
@@ -237,6 +255,14 @@ class OrderBookScraper:
         if self.failed_tokens:
             print(f"  Failed tokens: {len(self.failed_tokens)}")
 
+        # Track empty cycles
+        if saved == 0:
+            self.cycles_with_no_data += 1
+            if self.cycles_with_no_data >= 3:
+                print(f"[WARNING] {self.cycles_with_no_data} consecutive empty cycles")
+        else:
+            self.cycles_with_no_data = 0
+
         return saved
 
     def run(self):
@@ -253,13 +279,27 @@ class OrderBookScraper:
 
         while True:
             try:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting cycle #{self.cycle_count + 1}...")
                 saved = self.run_cycle()
 
                 if saved == 0 and self.cycle_count > 1:
                     print("[WARNING] No data saved this cycle")
 
-                print(f"\nNext update in {UPDATE_INTERVAL} seconds...")
+                # Auto-recovery: If stuck for 2 consecutive cycles, try reconnecting
+                if self.cycles_with_no_data >= 2:
+                    print(f"[AUTO-RECOVERY] {self.cycles_with_no_data} empty cycles, reconnecting to Binance...")
+                    try:
+                        self.init_exchange()
+                        print("[OK] Reconnected to Binance")
+                        self.cycles_with_no_data = 0
+                        self.failed_tokens.clear()
+                        print("[INFO] Cleared all failed tokens for fresh retry")
+                    except Exception as e:
+                        print(f"[ERROR] Reconnection failed: {e}")
+
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Sleeping for {UPDATE_INTERVAL} seconds...")
                 time.sleep(UPDATE_INTERVAL)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Woke from sleep, starting next cycle...")
 
             except KeyboardInterrupt:
                 print("\n[INFO] Shutting down...")

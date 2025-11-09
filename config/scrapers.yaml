@@ -25,16 +25,18 @@ scrapers:
     category: congressional
     description: Scrapes Senate trade disclosures
     enabled: true  # TESTING: Enabled for full system test
+    mode: oneshot
     free_tier: "Unlimited"
-    interval: "daily"
+    interval: "6 hours"
 
   - name: House Scraper
     script: fundamentals_data/house_scraper.py
     category: congressional
     description: Scrapes House trade disclosures
     enabled: true  # TESTING: Enabled for full system test
+    mode: oneshot
     free_tier: "Unlimited"
-    interval: "daily"
+    interval: "6 hours"
 
   # ==================== ECONOMIC DATA ====================
   - name: FRED Economic Data
@@ -43,7 +45,7 @@ scrapers:
     description: Fetches macroeconomic indicators from FRED
     enabled: true  # TESTING: Enabled for full system test
     free_tier: "Unlimited"
-    interval: "daily"
+    interval: "6 hours"
 
   # ==================== SEC FILINGS ====================
   - name: SEC EDGAR Reader
@@ -61,7 +63,7 @@ scrapers:
     description: Fetches company profiles from Financial Modeling Prep
     enabled: true  # TESTING: Enabled for full system test
     free_tier: "250 calls/day"
-    interval: "daily"
+    interval: "6 hours"
 
   - name: yfinance Fundamentals
     script: fundamentals_data/yfinance_fundamentals_reader.py
@@ -69,7 +71,7 @@ scrapers:
     description: Fetches company data from Yahoo Finance
     enabled: true  # TESTING: Enabled for full system test
     free_tier: "Unlimited"
-    interval: "daily"
+    interval: "6 hours"
 
   # ==================== CRYPTO SCRAPERS ====================
   - name: Twitter Meme Coins
@@ -158,7 +160,7 @@ scrapers:
     description: Market psychology indicator (0-100 sentiment score)
     enabled: true  # Table created and tested successfully
     free_tier: "Free (Alternative.me API)"
-    interval: "6 hours"
+    interval: "1 hour"
 
   - name: Binance Liquidations
     script: crypto_scrapers/binance_liquidations.py
@@ -172,9 +174,9 @@ scrapers:
     script: crypto_scrapers/exchange_flows.py
     category: crypto
     description: Whale movements to/from exchanges (BTC focus)
-    enabled: false  # Enable after adding Etherscan API key
-    free_tier: "Free (limited - blockchain.info)"
-    interval: "6 hours"
+    enabled: true  # Etherscan API key confirmed in .env
+    free_tier: "Free (Etherscan: 100k calls/day)"
+    interval: "15 minutes"
 
   - name: Binance Open Interest
     script: crypto_scrapers/binance_oi.py

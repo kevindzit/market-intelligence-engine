@@ -28,7 +28,8 @@ from nice_funcs.twitter_funcs import (
     calculate_influence_weight,
     analyze_sentiment,
     calculate_whale_velocity_metrics,
-    update_whale_sentiment_history
+    update_whale_sentiment_history,
+    validate_sentiment_data
 )
 
 # Setup httpx patching before importing twikit
@@ -105,6 +106,7 @@ PRIORITY_TOKENS = [
 
 TWEETS_PER_WHALE = 20  # Get last 20 tweets from each whale
 POLLING_INTERVAL = 10 * 60  # 10 minutes (different from main scraper)
+MAX_RATE_LIMIT_ACCOUNT_SWITCHES = 10
 
 # Database config
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -140,6 +142,24 @@ class WhaleTracker:
     def init_twitter_client(self):
         """Initialize twikit client from account pool"""
         self.client = get_pooled_client()
+
+    def _swap_account_after_rate_limit(self):
+        try:
+            from nice_funcs.twitter_account_pool import account_pool
+        except ImportError:
+            return False
+
+        try:
+            old_account = account_pool.get_account_num(self.client)
+            new_client = account_pool.rotate_after_rate_limit(self.client)
+            if new_client and new_client is not self.client:
+                new_account = account_pool.get_account_num(new_client)
+                self.client = new_client
+                print(f"[Account Pool] Whale tracker switched from Account {old_account} to {new_account}")
+                return True
+        except Exception as exc:
+            print(f"[Account Pool] Whale tracker rotation failed: {exc}")
+        return False
 
     def extract_mentioned_tokens(self, text):
         """Extract any crypto tokens mentioned in tweet"""
@@ -188,80 +208,89 @@ class WhaleTracker:
 
     async def get_whale_tweets(self, username):
         """Get recent tweets from a specific whale account"""
-        collected = []
+        attempts = 0
 
-        try:
-            print(f"  Checking @{username}...")
-            time.sleep(randint(2, 4))  # Be respectful
+        while attempts < MAX_RATE_LIMIT_ACCOUNT_SWITCHES:
+            collected = []
 
-            # Get user object first
-            user = await self.client.get_user_by_screen_name(username)
+            try:
+                print(f"  Checking @{username}...")
+                time.sleep(randint(2, 4))
 
-            if not user:
-                print(f"    [WARN] User @{username} not found")
+                user = await self.client.get_user_by_screen_name(username)
+
+                if not user:
+                    print(f"    [WARN] User @{username} not found")
+                    return collected
+
+                tweets = await self.client.get_user_tweets(
+                    user.id,
+                    tweet_type='Tweets',
+                    count=TWEETS_PER_WHALE
+                )
+
+                if tweets:
+                    for tweet in tweets:
+                        if tweet.id == self.last_tweet_ids.get(username):
+                            break
+
+                        if hasattr(tweet, 'retweeted_status') and tweet.retweeted_status:
+                            continue
+
+                        tweet_data = {
+                            'tweet_id': tweet.id,
+                            'username': username,
+                            'text': tweet.text,
+                            'followers': getattr(user, 'followers_count', 0),
+                            'following': getattr(user, 'following_count', 0),
+                            'bio': getattr(user, 'description', None),
+                            'verified': getattr(user, 'verified', False),
+                            'retweets': getattr(tweet, 'retweet_count', 0) or 0,
+                            'likes': getattr(tweet, 'favorite_count', 0) or 0,
+                            'replies': getattr(tweet, 'reply_count', 0) or 0,
+                            'quotes': getattr(tweet, 'quote_count', 0) or 0,
+                            'created_at': getattr(tweet, 'created_at', datetime.now()),
+                            'timestamp': datetime.now(),
+                            'mentioned_tokens': self.extract_mentioned_tokens(tweet.text),
+                            'account_type': WHALE_ACCOUNTS.get(username, 'Unknown'),
+                            'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
+                            'hashtag_count': tweet.text.count('#')
+                        }
+
+                        collected.append(tweet_data)
+
+                    if collected:
+                        self.last_tweet_ids[username] = collected[0]['tweet_id']
+                        print(f"    [OK] Found {len(collected)} new tweets")
+                    else:
+                        print(f"    [INFO] No new tweets")
+
                 return collected
 
-            # Get user's tweets
-            tweets = await self.client.get_user_tweets(
-                user.id,
-                tweet_type='Tweets',
-                count=TWEETS_PER_WHALE
-            )
+            except TooManyRequests as e:
+                attempts += 1
+                reset_time = datetime.fromtimestamp(e.rate_limit_reset)
+                wait_seconds = (reset_time - datetime.now()).total_seconds() + randint(5, 10)
+                print(f"Rate limited fetching @{username}. Attempt {attempts}/{MAX_RATE_LIMIT_ACCOUNT_SWITCHES}")
 
-            if tweets:
-                for tweet in tweets:
-                    # Skip if we've seen this tweet before
-                    if tweet.id == self.last_tweet_ids.get(username):
-                        break
+                if self._swap_account_after_rate_limit():
+                    await asyncio.sleep(randint(2, 4))
+                    continue
 
-                    # Skip retweets (we want original content)
-                    if hasattr(tweet, 'retweeted_status') and tweet.retweeted_status:
-                        continue
+                wait_seconds = max(wait_seconds, 5)
+                print(f"Waiting {int(wait_seconds)}s before retrying @{username}...")
+                await asyncio.sleep(wait_seconds)
 
-                    tweet_data = {
-                        'tweet_id': tweet.id,
-                        'username': username,
-                        'text': tweet.text,
-                        'followers': getattr(user, 'followers_count', 0),
-                        'following': getattr(user, 'following_count', 0),
-                        'bio': getattr(user, 'description', None),
-                        'verified': getattr(user, 'verified', False),
-                        'retweets': getattr(tweet, 'retweet_count', 0) or 0,
-                        'likes': getattr(tweet, 'favorite_count', 0) or 0,
-                        'replies': getattr(tweet, 'reply_count', 0) or 0,
-                        'quotes': getattr(tweet, 'quote_count', 0) or 0,
-                        'created_at': getattr(tweet, 'created_at', datetime.now()),
-                        'timestamp': datetime.now(),
-                        'mentioned_tokens': self.extract_mentioned_tokens(tweet.text),
-                        'account_type': WHALE_ACCOUNTS.get(username, 'Unknown'),
-                        # Extract metadata for AI analysis
-                        'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
-                        'hashtag_count': tweet.text.count('#')
-                    }
+            except Exception as e:
+                error_msg = str(e).lower()
+                if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
+                    print(f"    [WARN] Authentication error for @{username}: {e}")
+                    raise
+                print(f"    [ERROR] Failed to fetch @{username}: {e}")
+                break
 
-                    collected.append(tweet_data)
-
-                if collected:
-                    # Update last seen tweet
-                    self.last_tweet_ids[username] = collected[0]['tweet_id']
-                    print(f"    [OK] Found {len(collected)} new tweets")
-                else:
-                    print(f"    [INFO] No new tweets")
-
-        except TooManyRequests as e:
-            reset_time = datetime.fromtimestamp(e.rate_limit_reset)
-            wait_seconds = (reset_time - datetime.now()).total_seconds() + randint(5, 10)
-            print(f"Rate limited. Waiting {int(wait_seconds)}s...")
-            await asyncio.sleep(wait_seconds)
-        except Exception as e:
-            error_msg = str(e).lower()
-            # Check for authentication errors - raise to trigger global cookie refresh
-            if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
-                print(f"    [WARN] Authentication error for @{username}: {e}")
-                raise  # Raise to trigger global cookie refresh in main loop
-            print(f"    [ERROR] Failed to fetch @{username}: {e}")
-
-        return collected
+        print(f"    [WARN] Exhausted retries for @{username} due to rate limits")
+        return []
 
     def save_to_db(self, all_tweets):
         """Save whale tweets with special handling"""
@@ -331,6 +360,16 @@ class WhaleTracker:
                 # Save each mentioned token as separate entry
                 tokens_to_save = tweet['mentioned_tokens'] if tweet['mentioned_tokens'] else ['GENERAL']
 
+                # Validate all sentiment metrics before database insert
+                validated = validate_sentiment_data(
+                    sentiment_score=sentiment,
+                    bot_probability=bot_prob,
+                    pump_score=0.0,  # Whales are trusted sources, no pump detection
+                    influence_weight=influence_weight,
+                    volume_spike=0.0,  # N/A for account-based tracking
+                    token=tweet['username']  # Use username for logging context
+                )
+
                 for token in tokens_to_save:
                     try:
                         cursor.execute("""
@@ -348,8 +387,8 @@ class WhaleTracker:
                             tweet['tweet_id'],
                             token,
                             tweet['text'],
-                            round(sentiment, 4),
-                            'positive' if sentiment > 0.1 else 'negative' if sentiment < -0.1 else 'neutral',
+                            round(validated['sentiment_score'], 4),
+                            'positive' if validated['sentiment_score'] > 0.1 else 'negative' if validated['sentiment_score'] < -0.1 else 'neutral',
                             tweet['username'],
                             tweet['followers'],
                             tweet['retweets'],
@@ -358,13 +397,13 @@ class WhaleTracker:
                             tweet['quotes'],
                             tweet['created_at'],
                             tweet['timestamp'],
-                            round(weighted_score, 4),
+                            round(validated['sentiment_score'] * signal_strength * (validated['influence_weight'] * 100), 4),
                             alert_level,
                             True,  # All whale watchlist accounts are considered whales
                             None,  # volume_spike - N/A for account-based tracking
-                            round(bot_prob, 3),  # bot_probability - for security monitoring
+                            round(validated['bot_probability'], 3),  # bot_probability - for security monitoring
                             None,  # pump_score - whales are trusted sources
-                            round(influence_weight, 4),
+                            round(validated['influence_weight'], 4),
                             'whale_tracker',  # Source identifier
                             tweet.get('verified', False),
                             tweet.get('has_urls', False),

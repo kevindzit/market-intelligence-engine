@@ -1,7 +1,7 @@
 """
 Binance Liquidations Scraper
-Tracks real-time liquidations for flash crash/pump detection
-Updates every 30 seconds with aggregated liquidation data
+Tracks real-time liquidations via WebSocket for flash crash/pump detection
+Streams live liquidation data from Binance Futures
 Critical for catching reversals during capitulation events
 """
 
@@ -9,11 +9,12 @@ import os
 import sys
 import time
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 import psycopg2
-import requests
 from dotenv import load_dotenv
+import websocket
+import threading
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv(override=True)
@@ -21,13 +22,13 @@ load_dotenv(override=True)
 # Database configuration
 DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '54594')
-DB_NAME = os.getenv('DB_NAME', 'postgres')
+DB_NAME = os.getenv('DB_NAME', 'pjx')
 DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 
 # Scraper configuration
-UPDATE_INTERVAL = 30  # 30 seconds between updates
-API_URL = "https://fapi.binance.com/fapi/v1/allForceOrders"
+WEBSOCKET_URL = "wss://fstream.binance.com/ws/!forceOrder@arr"
+SAVE_INTERVAL = 30  # Save to database every 30 seconds
 
 # All tokens we track
 TOKENS = [
@@ -43,17 +44,20 @@ TOKENS = [
     'SUI', 'TON', 'SEI'
 ]
 
-# Map token symbols to Binance futures format
-TOKEN_MAP = {token: f"{token}USDT" for token in TOKENS}
+# Map full Binance symbol to our token (e.g., "BTCUSDT" -> "BTC")
+SYMBOL_MAP = {f"{token}USDT": token for token in TOKENS}
 
 
 class LiquidationScraper:
-    """Fetches liquidation data from Binance"""
+    """Streams liquidation data from Binance WebSocket"""
 
     def __init__(self):
         self.db_conn = None
-        self.cycle_count = 0
-        self.liquidation_cache = {}  # Track recent liquidations
+        self.pending_liquidations = []
+        self.liquidation_cache = set()  # Track seen liquidations (order_id)
+        self.last_save = datetime.now()
+        self.ws = None
+        self.running = False
 
     def init_db(self):
         """Initialize database connection"""
@@ -70,205 +74,198 @@ class LiquidationScraper:
             print(f"[ERROR] Database connection failed: {e}")
             raise
 
-    def fetch_liquidations(self, token):
-        """Fetch recent liquidations for a token"""
+    def on_message(self, ws, message):
+        """Handle incoming WebSocket message"""
         try:
-            symbol = TOKEN_MAP.get(token)
-            if not symbol:
-                return []
+            data = json.loads(message)
 
-            # Get liquidations from last 5 minutes
-            params = {
-                'symbol': symbol,
-                'limit': 100  # Max recent liquidations
-            }
+            # WebSocket sends liquidation order data
+            # Format: {"e":"forceOrder","E":timestamp,"o":{order details}}
+            if data.get('e') == 'forceOrder':
+                order = data.get('o', {})
 
-            response = requests.get(API_URL, params=params, timeout=5)
+                symbol = order.get('s', '')  # e.g., "BTCUSDT"
+                token = SYMBOL_MAP.get(symbol)
 
-            if response.status_code == 200:
-                data = response.json()
+                # Only process tokens we track
+                if not token:
+                    return
 
-                liquidations = []
-                for liq in data:
-                    # Parse Binance liquidation data
-                    liquidations.append({
-                        'token': token,
-                        'side': liq.get('side', 'UNKNOWN'),
-                        'price': float(liq.get('price', 0)),
-                        'quantity': float(liq.get('origQty', 0)),
-                        'liquidation_value': float(liq.get('price', 0)) * float(liq.get('origQty', 0)),
-                        'timestamp': datetime.fromtimestamp(liq.get('time', 0) / 1000),
-                        'source': 'binance'
-                    })
+                # Unique identifier for deduplication
+                order_id = order.get('T')  # Trade time as unique ID
+                if not order_id or order_id in self.liquidation_cache:
+                    return
 
-                return liquidations
-
-            return []
-
-        except Exception as e:
-            # Many tokens won't have futures, that's ok
-            return []
-
-    def aggregate_liquidations(self, all_liquidations):
-        """Aggregate liquidations by token for analysis"""
-        aggregated = {}
-
-        for liq in all_liquidations:
-            token = liq['token']
-            if token not in aggregated:
-                aggregated[token] = {
-                    'total_value': 0,
-                    'long_liquidations': 0,
-                    'short_liquidations': 0,
-                    'count': 0,
-                    'max_single': 0
+                # Parse liquidation data
+                liquidation = {
+                    'token': token,
+                    'side': order.get('S', 'UNKNOWN'),  # BUY or SELL
+                    'price': float(order.get('p', 0)),  # Average price
+                    'quantity': float(order.get('q', 0)),  # Original quantity
+                    'liquidation_value': float(order.get('p', 0)) * float(order.get('q', 0)),
+                    'timestamp': datetime.fromtimestamp(order.get('T', 0) / 1000),
+                    'source': 'binance'
                 }
 
-            aggregated[token]['total_value'] += liq['liquidation_value']
-            aggregated[token]['count'] += 1
-            aggregated[token]['max_single'] = max(aggregated[token]['max_single'], liq['liquidation_value'])
+                # Add to pending saves and cache
+                self.pending_liquidations.append(liquidation)
+                self.liquidation_cache.add(order_id)
 
-            if liq['side'].upper() == 'BUY':
-                aggregated[token]['short_liquidations'] += liq['liquidation_value']
-            else:
-                aggregated[token]['long_liquidations'] += liq['liquidation_value']
+                # Limit cache size
+                if len(self.liquidation_cache) > 10000:
+                    # Clear oldest half
+                    self.liquidation_cache = set(list(self.liquidation_cache)[5000:])
 
-        return aggregated
+                # Print significant liquidations
+                if liquidation['liquidation_value'] > 100000:  # Over $100k
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Large liquidation: "
+                          f"{token} ${liquidation['liquidation_value']:,.0f} ({liquidation['side']})")
 
-    def save_to_db(self, liquidations):
-        """Save liquidation data to database"""
-        if not liquidations:
-            return 0
+                # Save periodically
+                now = datetime.now()
+                if (now - self.last_save).total_seconds() >= SAVE_INTERVAL:
+                    self.save_to_db()
+                    self.last_save = now
 
-        cursor = self.db_conn.cursor()
+        except Exception as e:
+            print(f"[ERROR] Failed to process message: {e}")
+
+    def on_error(self, ws, error):
+        """Handle WebSocket errors"""
+        print(f"[ERROR] WebSocket error: {error}")
+
+    def on_close(self, ws, close_status_code, close_msg):
+        """Handle WebSocket close"""
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] WebSocket closed: {close_msg}")
+
+        # Save any pending liquidations before closing
+        if self.pending_liquidations:
+            self.save_to_db()
+
+    def on_open(self, ws):
+        """Handle WebSocket open"""
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] WebSocket connected - streaming liquidations...")
+
+    def save_to_db(self):
+        """Save pending liquidations to database"""
+        if not self.pending_liquidations:
+            return
+
         saved = 0
-
         try:
-            for liq in liquidations:
-                try:
-                    # Check if we've already saved this liquidation
-                    cache_key = f"{liq['token']}_{liq['timestamp']}_{liq['liquidation_value']}"
-                    if cache_key in self.liquidation_cache:
-                        continue
+            cursor = self.db_conn.cursor()
 
+            for liq in self.pending_liquidations:
+                try:
                     cursor.execute("""
                         INSERT INTO liquidations
                         (token, side, liquidation_value, price, quantity, timestamp, source)
                         VALUES (%(token)s, %(side)s, %(liquidation_value)s,
                                 %(price)s, %(quantity)s, %(timestamp)s, %(source)s)
                     """, liq)
-
                     saved += 1
-                    self.liquidation_cache[cache_key] = True
-
-                    # Keep cache size reasonable
-                    if len(self.liquidation_cache) > 10000:
-                        # Remove oldest entries
-                        keys = list(self.liquidation_cache.keys())[:5000]
-                        for k in keys:
-                            del self.liquidation_cache[k]
-
                 except Exception as e:
-                    self.db_conn.rollback()
+                    # Skip duplicates or errors
+                    pass
 
             self.db_conn.commit()
+            cursor.close()
+
+            if saved > 0:
+                # Aggregate for display
+                aggregated = self.aggregate_liquidations(self.pending_liquidations)
+
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Saved {saved} liquidations")
+
+                # Show top liquidated tokens
+                sorted_tokens = sorted(aggregated.items(),
+                                     key=lambda x: x[1]['total_value'], reverse=True)
+
+                for token, data in sorted_tokens[:5]:
+                    total_value = data['total_value']
+                    long_pct = (data['long_liquidations'] / total_value * 100) if total_value > 0 else 0
+                    short_pct = (data['short_liquidations'] / total_value * 100) if total_value > 0 else 0
+
+                    signal = ""
+                    if total_value > 1000000:
+                        if long_pct > 70:
+                            signal = "[LONG SQUEEZE]"
+                        elif short_pct > 70:
+                            signal = "[SHORT SQUEEZE]"
+
+                    print(f"  {token:<8} ${total_value:>12,.0f} "
+                          f"(Longs: {long_pct:>5.1f}% Shorts: {short_pct:>5.1f}%) {signal}")
+
+            # Clear pending liquidations
+            self.pending_liquidations = []
 
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
-            self.db_conn.rollback()
 
-        finally:
-            cursor.close()
+    def aggregate_liquidations(self, liquidations):
+        """Aggregate liquidations by token"""
+        aggregated = {}
 
-        return saved
+        for liq in liquidations:
+            token = liq['token']
+            if token not in aggregated:
+                aggregated[token] = {
+                    'total_value': 0,
+                    'long_liquidations': 0,
+                    'short_liquidations': 0,
+                    'count': 0
+                }
 
-    def run_cycle(self):
-        """Run one collection cycle for all tokens"""
-        self.cycle_count += 1
-        print(f"\n{'='*70}")
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Liquidation Cycle #{self.cycle_count}")
-        print('='*70)
+            aggregated[token]['total_value'] += liq['liquidation_value']
+            aggregated[token]['count'] += 1
 
-        all_liquidations = []
-        tokens_with_liquidations = 0
+            if liq['side'] == 'SELL':  # Long liquidation (forced sell)
+                aggregated[token]['long_liquidations'] += liq['liquidation_value']
+            else:  # Short liquidation (forced buy)
+                aggregated[token]['short_liquidations'] += liq['liquidation_value']
 
-        for token in TOKENS:
-            liquidations = self.fetch_liquidations(token)
-            if liquidations:
-                all_liquidations.extend(liquidations)
-                tokens_with_liquidations += 1
-
-        # Save to database
-        saved = self.save_to_db(all_liquidations)
-
-        # Aggregate for display
-        if all_liquidations:
-            aggregated = self.aggregate_liquidations(all_liquidations)
-
-            print(f"\nLiquidations detected for {tokens_with_liquidations} tokens:")
-            print("-" * 50)
-
-            # Sort by total liquidation value
-            sorted_tokens = sorted(aggregated.items(), key=lambda x: x[1]['total_value'], reverse=True)
-
-            for token, data in sorted_tokens[:10]:  # Show top 10
-                total_value = data['total_value']
-                long_pct = (data['long_liquidations'] / total_value * 100) if total_value > 0 else 0
-                short_pct = (data['short_liquidations'] / total_value * 100) if total_value > 0 else 0
-
-                # Signal interpretation
-                signal = ""
-                if total_value > 1000000:  # Over $1M liquidated
-                    if long_pct > 70:
-                        signal = "[LONG SQUEEZE - POTENTIAL BOTTOM]"
-                    elif short_pct > 70:
-                        signal = "[SHORT SQUEEZE - POTENTIAL TOP]"
-                    else:
-                        signal = "[HIGH VOLATILITY]"
-
-                print(f"{token:<8} ${total_value:>12,.0f} "
-                      f"(Longs: {long_pct:>5.1f}% Shorts: {short_pct:>5.1f}%) {signal}")
-
-            # Check for extreme liquidation events
-            total_all = sum(agg['total_value'] for agg in aggregated.values())
-            if total_all > 10000000:  # Over $10M total
-                print(f"\n[ALERT] MAJOR LIQUIDATION EVENT: ${total_all:,.0f} total liquidated!")
-                print("         Potential reversal opportunity!")
-
-        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Cycle complete:")
-        print(f"  New liquidations saved: {saved}")
-        print(f"  Tokens with activity: {tokens_with_liquidations}")
-
-        return saved
+        return aggregated
 
     def run(self):
-        """Main loop"""
+        """Main loop - connect to WebSocket and stream"""
         print("\n" + "="*70)
-        print("BINANCE LIQUIDATIONS SCRAPER")
+        print("BINANCE LIQUIDATIONS SCRAPER (WebSocket)")
         print(f"Tracking {len(TOKENS)} tokens")
-        print(f"Update interval: {UPDATE_INTERVAL} seconds")
-        print("Purpose: Detect flash crashes and capitulation events")
+        print(f"Saving to database every {SAVE_INTERVAL} seconds")
         print("="*70)
 
         self.init_db()
+        self.running = True
 
-        while True:
+        # WebSocket connection with auto-reconnect
+        while self.running:
             try:
-                self.run_cycle()
+                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Connecting to Binance WebSocket...")
 
-                print(f"\nNext update in {UPDATE_INTERVAL} seconds...")
-                time.sleep(UPDATE_INTERVAL)
+                self.ws = websocket.WebSocketApp(
+                    WEBSOCKET_URL,
+                    on_message=self.on_message,
+                    on_error=self.on_error,
+                    on_close=self.on_close,
+                    on_open=self.on_open
+                )
+
+                # Run forever (will reconnect on disconnect)
+                self.ws.run_forever()
 
             except KeyboardInterrupt:
                 print("\n[INFO] Shutting down...")
+                self.running = False
                 break
-
             except Exception as e:
-                print(f"[ERROR] Cycle failed: {e}")
-                print("Retrying in 30 seconds...")
-                time.sleep(30)
+                print(f"[ERROR] WebSocket connection failed: {e}")
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Reconnecting in 10 seconds...")
+                time.sleep(10)
 
+        # Cleanup
         if self.db_conn:
+            if self.pending_liquidations:
+                self.save_to_db()
             self.db_conn.close()
 
 

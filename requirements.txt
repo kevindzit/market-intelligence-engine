@@ -26,6 +26,7 @@ google-generativeai>=0.8.5
 openai>=1.0.0  # For DeepSeek ensemble
 websockets>=15.0.0
 numpy>=1.24.0  # For data analysis
+scikit-learn>=1.3.0  # For trade learner (PCA, StandardScaler)
 
 # Financial data packages
 fredapi>=0.5.1
@@ -43,6 +44,8 @@ vaderSentiment>=3.3.2
 python-dotenv>=1.0.0
 httpx>=0.28.0
 setuptools>=75.0.0
+colorama>=0.4.6  # Color terminal output (Windows compatible)
+pyyaml>=6.0.2  # YAML config parsing
 
 # Crypto exchange API
 ccxt>=4.4.72

@@ -13,11 +13,11 @@ load_dotenv()
 FRED_API_KEY = os.getenv('FRED_API_KEY')
 
 # PostgreSQL Connection Details (same as your other scripts)
-DB_NAME = "postgres"
-DB_USER = "postgres"
-DB_PASS = "postgres"
-DB_HOST = "localhost"
-DB_PORT = "54594"
+DB_NAME = os.getenv('DB_NAME', 'pjx')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASS = os.getenv('DB_PASSWORD', 'postgres')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '54594')
 
 # --- Key Economic Indicators to Track ---
 # We can add more to this dictionary later.

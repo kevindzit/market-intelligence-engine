@@ -1,9 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs:*)",
-      "Bash(timeout 15 C:/venvs/pjxvenv/Scripts/python.exe:*)",
-      "Bash(timeout 5 C:/venvs/pjxvenv/Scripts/python.exe:*)"
+      "Bash(psql:*)",
+      "Bash(python:*)",
+      "Bash(rm:*)",
+      "Bash(dir:*)",
+      "Bash(Select-Object -First 10)",
+      "Bash(taskkill /F /PID 19764)",
+      "Bash(taskkill //F //PID 19764)",
+      "Bash(taskkill //F //PID 22476)",
+      "Bash(done)",
+      "Bash(cut:*)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" scripts/create_market_metrics_table.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/market_analyzer.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" scripts/verify_market_metrics_fix.py)"
     ],
     "deny": [],
     "ask": []

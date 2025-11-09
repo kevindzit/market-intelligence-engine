@@ -127,7 +127,12 @@ CREATE TABLE IF NOT EXISTS twitter_sentiment (
     sentiment_velocity NUMERIC(10,6),
     volume_acceleration NUMERIC(10,6),
     momentum_score NUMERIC(10,6),
-    CONSTRAINT unique_tweet_token UNIQUE (tweet_id, token)
+    CONSTRAINT unique_tweet_token UNIQUE (tweet_id, token),
+    CONSTRAINT chk_sentiment_score CHECK (sentiment_score BETWEEN -1 AND 1),
+    CONSTRAINT chk_bot_probability CHECK (bot_probability BETWEEN 0 AND 1),
+    CONSTRAINT chk_pump_score CHECK (pump_score BETWEEN 0 AND 1),
+    CONSTRAINT chk_influence_weight CHECK (influence_weight BETWEEN 0 AND 1),
+    CONSTRAINT chk_volume_spike CHECK (volume_spike >= 0)
 );
 
 -- ============================================================================
@@ -624,6 +629,95 @@ CREATE TABLE IF NOT EXISTS circuit_breaker_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_breaker_time ON circuit_breaker_events(triggered_at DESC);
+
+-- ============================================================================
+-- TABLE: tactical_alerts
+-- Purpose: Stores high-frequency tactical trading alerts
+-- Used by: tactical_monitor.py → ai_trader.py (2-minute monitoring cycle)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS tactical_alerts (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(20) NOT NULL,
+    alert_type VARCHAR(50) NOT NULL,
+    urgency VARCHAR(20) NOT NULL,
+    confidence INTEGER,
+    signals JSONB,
+    recommendation VARCHAR(50),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    consumed_at TIMESTAMP WITH TIME ZONE DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tactical_alerts_token ON tactical_alerts(token);
+CREATE INDEX IF NOT EXISTS idx_tactical_alerts_created ON tactical_alerts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tactical_alerts_consumed ON tactical_alerts(consumed_at);
+
+-- ============================================================================
+-- TABLE: model_performance
+-- Purpose: Tracks AI model performance for optimization
+-- Used by: ai_optimizer.py (tracks Claude, DeepSeek, Gemini performance)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS model_performance (
+    id SERIAL PRIMARY KEY,
+    model_name VARCHAR(50) NOT NULL,
+    token VARCHAR(20),
+    decision_action VARCHAR(10),
+    confidence NUMERIC(5,4),
+    position_size NUMERIC(12,2),
+    scenario VARCHAR(50),
+    timestamp TIMESTAMP WITH TIME ZONE,
+    outcome JSONB,
+    pnl NUMERIC(12,2),
+    profitable BOOLEAN,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_performance_model ON model_performance(model_name);
+CREATE INDEX IF NOT EXISTS idx_model_performance_token ON model_performance(token);
+CREATE INDEX IF NOT EXISTS idx_model_performance_timestamp ON model_performance(timestamp DESC);
+
+-- ============================================================================
+-- TABLE: market_regimes
+-- Purpose: Tracks detected market regimes (bull, bear, crab, etc.)
+-- Used by: market_analyzer.py (regime-aware trading decisions)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS market_regimes (
+    id SERIAL PRIMARY KEY,
+    regime VARCHAR(50) NOT NULL,
+    confidence INTEGER,
+    btc_dominance NUMERIC(6,4),
+    trend_direction VARCHAR(20),
+    trend_strength NUMERIC(6,4),
+    volatility NUMERIC(8,4),
+    fear_greed INTEGER,
+    funding_sentiment VARCHAR(50),
+    recommended_strategy VARCHAR(50),
+    characteristics TEXT[],
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_regime_created ON market_regimes(created_at DESC);
+
+-- ============================================================================
+-- TABLE: market_metrics
+-- Purpose: Tracks daily market metrics (BTC dominance, total market cap, etc.)
+-- Used by: market_analyzer.py (historical trend analysis)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS market_metrics (
+    id SERIAL PRIMARY KEY,
+    btc_dominance NUMERIC(6,4),
+    total_market_cap NUMERIC(20,2),
+    total_volume_24h NUMERIC(20,2),
+    altcoin_market_cap NUMERIC(20,2),
+    defi_dominance NUMERIC(6,4),
+    scraped_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_metrics_scraped ON market_metrics(scraped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_market_metrics_btc_dom ON market_metrics(btc_dominance);
 
 -- ============================================================================
 -- COMPLETE SCHEMA LOADED

@@ -13,6 +13,8 @@ With 4 accounts = 200 searches/15min instead of 50!
 
 import os
 import json
+import time
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from twikit import Client
@@ -28,12 +30,90 @@ class TwitterAccountPool:
 
     def __init__(self):
         """Initialize account pool by loading all available account cookies"""
-        self.clients = []  # List of (client, account_num, last_used_time)
+        self.clients = []  # List of metadata per account
         self.current_index = 0
         self.rate_limit_window = 15 * 60  # 15 minutes in seconds
 
         # Load all available account cookie files
         self._load_accounts()
+
+    def _acquire_refresh_lock(self, cookies_file, timeout=120):
+        """
+        Acquire a lock for refreshing cookies (prevents multiple processes from refreshing simultaneously)
+
+        Args:
+            cookies_file: Path to the cookies file being refreshed
+            timeout: Max seconds to wait for lock (default: 120)
+
+        Returns:
+            tuple: (acquired: bool, should_refresh: bool)
+                - acquired=True: We got the lock, should refresh
+                - acquired=False, should_refresh=False: Another process is refreshing, wait for them
+        """
+        lock_file = Path(str(cookies_file) + ".lock")
+        start_time = time.time()
+
+        # Try to acquire lock
+        while True:
+            if not lock_file.exists():
+                # No lock exists - try to create it
+                try:
+                    # Create lock file with our PID
+                    lock_file.write_text(f"{os.getpid()}\n{datetime.now().isoformat()}")
+                    # Small delay to ensure file is written
+                    time.sleep(0.1)
+
+                    # Verify we actually created it (race condition check)
+                    if lock_file.exists():
+                        content = lock_file.read_text().strip()
+                        if content.startswith(str(os.getpid())):
+                            # We successfully acquired the lock
+                            return (True, True)
+                except:
+                    # Failed to create lock, another process might have beaten us
+                    pass
+
+            # Lock exists - check if it's stale
+            try:
+                if lock_file.exists():
+                    content = lock_file.read_text().strip()
+                    lines = content.split('\n')
+                    if len(lines) >= 2:
+                        lock_time = datetime.fromisoformat(lines[1])
+                        age = (datetime.now() - lock_time).total_seconds()
+
+                        # If lock is older than 120 seconds, it's stale (Chrome might have crashed)
+                        if age > 120:
+                            print(f"[Cookie Lock] Stale lock detected (age: {age:.0f}s), removing...")
+                            lock_file.unlink()
+                            continue
+            except:
+                # Couldn't read lock file, it might be being written
+                pass
+
+            # Check timeout
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                print(f"[Cookie Lock] Timeout after {timeout}s waiting for refresh lock")
+                return (False, False)
+
+            # Wait and retry
+            print(f"[Cookie Lock] Another process is refreshing cookies, waiting... ({elapsed:.0f}s/{timeout}s)")
+            time.sleep(5)
+
+    def _release_refresh_lock(self, cookies_file):
+        """
+        Release the refresh lock
+
+        Args:
+            cookies_file: Path to the cookies file
+        """
+        lock_file = Path(str(cookies_file) + ".lock")
+        try:
+            if lock_file.exists():
+                lock_file.unlink()
+        except Exception as e:
+            print(f"[Cookie Lock] Warning: Could not remove lock file: {e}")
 
     def _load_accounts(self):
         """Load all cookies_accountN.json files and create clients"""
@@ -60,7 +140,8 @@ class TwitterAccountPool:
                     'client': client,
                     'account_num': account_num,
                     'last_used': datetime.now() - timedelta(hours=1),  # Available immediately
-                    'cookies_file': str(cookies_file)
+                    'cookies_file': str(cookies_file),
+                    'rate_limited_until': datetime.now() - timedelta(hours=1)
                 })
 
                 loaded_count += 1
@@ -78,6 +159,12 @@ class TwitterAccountPool:
         else:
             print(f"[Account Pool] [OK] Loaded {loaded_count} accounts")
             print(f"[Account Pool] [OK] Rate limit capacity: {loaded_count * 50} searches/15min")
+
+    def _find_account_entry(self, client):
+        for account in self.clients:
+            if account['client'] is client:
+                return account
+        return None
 
     def get_client(self):
         """
@@ -98,38 +185,30 @@ class TwitterAccountPool:
         if len(self.clients) == 1:
             return self.clients[0]['client']
 
-        # Find the next available (non-rate-limited) account
         now = datetime.now()
 
-        # Try to find an account that's past the rate limit window
         for i in range(len(self.clients)):
-            # Round-robin through accounts
             index = (self.current_index + i) % len(self.clients)
             account = self.clients[index]
 
-            time_since_use = (now - account['last_used']).total_seconds()
-
-            if time_since_use >= self.rate_limit_window:
-                # This account is fresh - use it
+            if now >= account.get('rate_limited_until', datetime.min):
                 account['last_used'] = now
                 self.current_index = (index + 1) % len(self.clients)
-
                 print(f"[Account Pool] Using Account {account['account_num']}")
                 return account['client']
 
-        # All accounts recently used - find the oldest one
-        oldest_account = min(self.clients, key=lambda x: x['last_used'])
-        time_since_use = (now - oldest_account['last_used']).total_seconds()
+        # No account is currently ready - pick the one that becomes available soonest
+        next_ready = min(
+            self.clients,
+            key=lambda acc: acc.get('rate_limited_until', datetime.min)
+        )
+        wait_time = max((next_ready['rate_limited_until'] - now).total_seconds(), 0)
+        if wait_time > 0:
+            print(f"[Account Pool] [WAIT] All accounts cooling down. Next refresh in {int(wait_time)}s")
 
-        if time_since_use < self.rate_limit_window:
-            wait_time = self.rate_limit_window - time_since_use
-            print(f"[Account Pool] [WAIT] All accounts rate limited. Next refresh in {int(wait_time)}s")
-            # Note: We don't actually wait here - the calling code handles rate limit errors
-
-        # Use the oldest account (closest to being refreshed)
-        oldest_account['last_used'] = now
-        print(f"[Account Pool] Using Account {oldest_account['account_num']} (least recently used)")
-        return oldest_account['client']
+        self.current_index = (self.clients.index(next_ready) + 1) % len(self.clients)
+        next_ready['last_used'] = now
+        return next_ready['client']
 
     def get_account_num(self, client):
         """
@@ -146,9 +225,9 @@ class TwitterAccountPool:
                 return account['account_num']
         return None
 
-    def refresh_account(self, account_num):
+    def refresh_account(self, account_num, max_attempts=10):
         """
-        Refresh cookies for a specific account
+        Refresh cookies for a specific account (with locking to prevent race conditions)
 
         Args:
             account_num: Account number to refresh (1, 2, 3, etc.)
@@ -175,42 +254,108 @@ class TwitterAccountPool:
             print(f"[Account Pool] [FAIL] Account {account_num} not found in pool")
             return False
 
-        # Get credentials from .env
-        account_email = os.getenv(f'TWITTER_ACCOUNT{account_num}_EMAIL')
-        account_username = os.getenv(f'TWITTER_ACCOUNT{account_num}_USERNAME')
-        account_password = os.getenv('TWITTER_PASSWORD')
+        cookies_file = account['cookies_file']
 
-        if not account_email or not account_password or not account_username:
-            print(f"[Account Pool] [FAIL] Missing credentials in .env for Account {account_num}")
-            print(f"[Account Pool] [FAIL] Need TWITTER_ACCOUNT{account_num}_EMAIL, TWITTER_ACCOUNT{account_num}_USERNAME, and TWITTER_PASSWORD")
-            return False
+        # Try to acquire refresh lock (prevents multiple processes from refreshing simultaneously)
+        acquired, should_refresh = self._acquire_refresh_lock(cookies_file, timeout=120)
 
-        # Extract fresh cookies with automated login
-        cookies = refresh_cookies(headless=False, account_email=account_email, account_password=account_password, account_username=account_username)
-
-        if not cookies:
-            print(f"[Account Pool] [FAIL] Failed to extract cookies for Account {account_num}")
-            return False
-
-        # Save to account-specific file
         try:
-            with open(account['cookies_file'], 'w') as f:
-                json.dump(cookies, f, indent=2)
+            if should_refresh:
+                # We got the lock - we need to do the refresh
+                print(f"[Account Pool] [LOCK ACQUIRED] This process will refresh Account {account_num}")
 
-            # Create new client with fresh cookies
-            new_client = Client('en-US')
-            new_client.load_cookies(account['cookies_file'])
+                # Get credentials from .env
+                account_email = os.getenv(f'TWITTER_ACCOUNT{account_num}_EMAIL')
+                account_username = os.getenv(f'TWITTER_ACCOUNT{account_num}_USERNAME')
+                account_password = os.getenv('TWITTER_PASSWORD')
 
-            # Update pool with new client
-            account['client'] = new_client
-            account['last_used'] = datetime.now() - timedelta(hours=1)  # Make it available
+                if not account_email or not account_password or not account_username:
+                    print(f"[Account Pool] [FAIL] Missing credentials in .env for Account {account_num}")
+                    print(f"[Account Pool] [FAIL] Need TWITTER_ACCOUNT{account_num}_EMAIL, TWITTER_ACCOUNT{account_num}_USERNAME, and TWITTER_PASSWORD")
+                    return False
 
-            print(f"[Account Pool] [OK] Account {account_num} refreshed successfully!")
-            return True
+                orchestrator_mode = os.getenv('ORCHESTRATOR_RUNNING', 'false').lower() == 'true'
 
-        except Exception as e:
-            print(f"[Account Pool] [FAIL] Error refreshing Account {account_num}: {e}")
-            return False
+                # Always try headless first for automation, only show window if it fails
+                def should_use_headless(attempt):
+                    # First attempts are headless for automation
+                    # Last attempt shows window as fallback
+                    return attempt < max_attempts
+
+                cookies = None
+
+                for attempt in range(1, max_attempts + 1):
+                    use_headless = should_use_headless(attempt)
+                    mode_label = "automated" if use_headless else "interactive"
+                    print(f"[Account Pool] Attempt {attempt}/{max_attempts} ({mode_label})")
+
+                    cookies = refresh_cookies(
+                        headless=use_headless,
+                        account_email=account_email,
+                        account_password=account_password,
+                        account_username=account_username
+                    )
+
+                    if cookies:
+                        break
+
+                    wait_seconds = min(5 * attempt, 30)
+                    print(f"[Account Pool] Attempt {attempt} failed. Retrying in {wait_seconds}s...")
+                    time.sleep(wait_seconds)
+
+                if not cookies:
+                    print(f"[Account Pool] [FAIL] Failed to extract cookies for Account {account_num} after {max_attempts} attempts")
+                    return False
+
+                # Save to account-specific file
+                try:
+                    with open(cookies_file, 'w') as f:
+                        json.dump(cookies, f, indent=2)
+
+                    print(f"[Account Pool] [OK] Cookies saved for Account {account_num}")
+
+                except Exception as e:
+                    print(f"[Account Pool] [FAIL] Error saving cookies for Account {account_num}: {e}")
+                    return False
+
+            else:
+                # Another process is/was refreshing - just reload the cookies
+                print(f"[Account Pool] [WAIT COMPLETE] Another process refreshed Account {account_num}, reloading...")
+
+            # Create new client with fresh cookies (either we just saved them, or another process did)
+            try:
+                new_client = Client('en-US')
+                new_client.load_cookies(cookies_file)
+
+                # Update pool with new client
+                account['client'] = new_client
+                account['last_used'] = datetime.now() - timedelta(hours=1)  # Make it available
+
+                print(f"[Account Pool] [OK] Account {account_num} client refreshed successfully!")
+                return True
+
+            except Exception as e:
+                print(f"[Account Pool] [FAIL] Error loading refreshed cookies for Account {account_num}: {e}")
+                return False
+
+        finally:
+            # Always release the lock if we acquired it
+            if acquired:
+                self._release_refresh_lock(cookies_file)
+                print(f"[Account Pool] [LOCK RELEASED] Account {account_num}")
+
+    def rotate_after_rate_limit(self, current_client):
+        """Mark the current account as rate limited and return the next available client."""
+        account = self._find_account_entry(current_client)
+        now = datetime.now()
+        if account:
+            cooldown = now + timedelta(seconds=self.rate_limit_window)
+            account['rate_limited_until'] = cooldown
+            account['last_used'] = now
+            print(f"[Account Pool] Account {account['account_num']} hit rate limit. Cooling down for {self.rate_limit_window//60}m")
+
+        new_client = self.get_client()
+        return new_client
 
     def get_status(self):
         """Get status of all accounts in the pool"""

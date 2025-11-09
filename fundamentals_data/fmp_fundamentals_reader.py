@@ -14,11 +14,11 @@ load_dotenv()
 FMP_API_KEY = os.getenv('FMP_API_KEY')
 
 # PostgreSQL Connection Details
-DB_NAME = "postgres"
-DB_USER = "postgres"
-DB_PASS = "postgres"
-DB_HOST = "localhost"
-DB_PORT = "54594"
+DB_NAME = os.getenv('DB_NAME', 'pjx')
+DB_USER = os.getenv('DB_USER', 'postgres')
+DB_PASS = os.getenv('DB_PASSWORD', 'postgres')
+DB_HOST = os.getenv('DB_HOST', 'localhost')
+DB_PORT = os.getenv('DB_PORT', '54594')
 
 # --- List of Tickers to Monitor ---
 # A diverse list of major companies and key ETFs.

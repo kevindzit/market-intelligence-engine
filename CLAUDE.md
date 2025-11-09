@@ -35,7 +35,7 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
 ## Development Rules
 
 ### DO:
-- ✅ **Keep files under 800 lines** - if longer, split into new files
+- ✅ **Keep files under 3000 lines** - if longer, split into new files
 - ✅ **Ask before creating multiple files** - build one component at a time
 - ✅ **Use real data only** - no fake/synthetic data, fail the script if data unavailable
 - ✅ **Keep code simple and readable** - simple over clever, self-explanatory code

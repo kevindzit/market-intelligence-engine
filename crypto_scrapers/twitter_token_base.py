@@ -31,6 +31,7 @@ from nice_funcs.twitter_funcs import (
     calculate_volume_spike,
     calculate_token_velocity_metrics,
     update_token_sentiment_history,
+    validate_sentiment_data,
     SPAM_KEYWORDS
 )
 
@@ -43,6 +44,7 @@ from twikit import TooManyRequests
 TWEETS_PER_TOKEN = 30
 POLLING_INTERVAL = 5 * 60  # 5 minutes
 MIN_FOLLOWERS = 5000
+MAX_RATE_LIMIT_ACCOUNT_SWITCHES = 10
 
 # Database config
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -80,7 +82,7 @@ class TwitterTokenScraperBase:
         self.db_pool = None  # Changed from db_conn to db_pool
         self.volume_baseline = defaultdict(lambda: {'count': 20.0, 'history': []})
         self.last_poll_time = defaultdict(lambda: datetime.now() - timedelta(hours=1))
-        self.health = HealthMonitor(source, alert_threshold=5)
+        self.health = HealthMonitor(source, alert_threshold=100)  # Increased to 100 - keep searching even after many empty cycles
 
         # Velocity tracking - stores last 3 cycles per token
         self.sentiment_history = defaultdict(list)
@@ -130,75 +132,157 @@ class TwitterTokenScraperBase:
         """Initialize twikit client from account pool"""
         self.client = get_pooled_client()
 
-    async def get_tweets_for_token(self, token):
-        """Fetch tweets for a token with enhanced data"""
-        collected = []
+    def _swap_account_after_rate_limit(self):
+        """Try to rotate to another account when rate limited."""
+        try:
+            from nice_funcs.twitter_account_pool import account_pool
+        except ImportError:
+            return False
 
         try:
-            search_term = f"${token}"
-            print(f"\nSearching: {search_term}")
-            await asyncio.sleep(randint(1, 3))
+            old_account = account_pool.get_account_num(self.client)
+            new_client = account_pool.rotate_after_rate_limit(self.client)
+            if new_client and new_client is not self.client:
+                new_account = account_pool.get_account_num(new_client)
+                self.client = new_client
+                print(f"[Account Pool] Switched from Account {old_account} to {new_account} after rate limit")
+                return True
+            return False
+        except Exception as exc:
+            print(f"[Account Pool] Account rotation failed: {exc}")
+            return False
 
-            tweets = await self.client.search_tweet(search_term, product='Latest')
+    def _handle_auth_error(self):
+        """Handle authentication errors by refreshing cookies automatically."""
+        try:
+            from nice_funcs.twitter_account_pool import account_pool
+        except ImportError:
+            print("[ERROR] Account pool not available for auth recovery")
+            return False
 
-            if tweets:
-                for tweet in tweets:
-                    if len(collected) >= TWEETS_PER_TOKEN:
-                        break
+        try:
+            # Get current account number
+            account_num = account_pool.get_account_num(self.client)
+            if account_num is None:
+                print("[ERROR] Could not identify current account")
+                return False
 
-                    # Enhanced spam filtering
-                    text_lower = tweet.text.lower()
-                    if any(spam in text_lower for spam in SPAM_KEYWORDS):
-                        continue
+            print(f"[Auth Recovery] Attempting to refresh cookies for Account {account_num}...")
 
-                    # Skip retweets (we only want original content)
-                    if hasattr(tweet, 'retweeted_status') and tweet.retweeted_status:
-                        continue
+            # Try to refresh the account's cookies
+            success = account_pool.refresh_account(account_num, max_attempts=3)
+            if success:
+                # Update our client reference to the refreshed one
+                for acc in account_pool.clients:
+                    if acc['account_num'] == account_num:
+                        self.client = acc['client']
+                        print(f"[Auth Recovery] Successfully refreshed Account {account_num}")
+                        return True
 
-                    user = tweet.user if hasattr(tweet, 'user') and tweet.user else None
+            print(f"[Auth Recovery] Failed to refresh Account {account_num}")
+            return False
 
-                    # Quality filter - skip low-follower accounts
-                    followers = getattr(user, 'followers_count', 0) if user else 0
-                    if followers < MIN_FOLLOWERS:
-                        continue
-
-                    tweet_data = {
-                        'tweet_id': tweet.id,
-                        'token': token.upper(),
-                        'text': tweet.text,
-                        'username': getattr(user, 'screen_name', 'unknown') if user else 'unknown',
-                        'followers': followers,
-                        'following': getattr(user, 'following_count', getattr(user, 'friends_count', 0)) if user else 0,
-                        'bio': getattr(user, 'description', None) if user else None,
-                        'profile_image_custom': hasattr(user, 'profile_image_url') if user else False,
-                        'verified': getattr(user, 'verified', False) if user else False,
-                        'retweets': getattr(tweet, 'retweet_count', 0) or 0,
-                        'likes': getattr(tweet, 'favorite_count', 0) or 0,
-                        'replies': getattr(tweet, 'reply_count', 0) or 0,
-                        'quotes': getattr(tweet, 'quote_count', 0) or 0,
-                        'created_at': getattr(tweet, 'created_at', datetime.now()),
-                        'timestamp': datetime.now(),
-                        'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
-                        'hashtag_count': tweet.text.count('#')
-                    }
-
-                    collected.append(tweet_data)
-
-            print(f"[OK] Collected {len(collected)} quality tweets for {token}")
-
-        except TooManyRequests as e:
-            reset_time = datetime.fromtimestamp(e.rate_limit_reset)
-            wait_seconds = (reset_time - datetime.now()).total_seconds() + randint(5, 10)
-            print(f"Rate limited. Waiting {int(wait_seconds)}s...")
-            await asyncio.sleep(wait_seconds)
         except Exception as e:
-            error_msg = str(e).lower()
-            if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
-                print(f"[WARN] Authentication error detected: {e}")
-                raise  # Raise to trigger global cookie refresh
-            print(f"[ERROR] Failed to fetch {token}: {e}")
+            print(f"[Auth Recovery] Error during cookie refresh: {e}")
+            return False
 
-        return collected
+    async def get_tweets_for_token(self, token):
+        """Fetch tweets for a token with enhanced data and account rotation"""
+        attempt = 0
+
+        while attempt < MAX_RATE_LIMIT_ACCOUNT_SWITCHES:
+            collected = []
+
+            try:
+                search_term = f"${token}"
+                print(f"\nSearching: {search_term}")
+                await asyncio.sleep(randint(1, 3))
+
+                tweets = await self.client.search_tweet(search_term, product='Latest')
+
+                if tweets:
+                    for tweet in tweets:
+                        if len(collected) >= TWEETS_PER_TOKEN:
+                            break
+
+                        text_lower = tweet.text.lower()
+                        if any(spam in text_lower for spam in SPAM_KEYWORDS):
+                            continue
+
+                        if hasattr(tweet, 'retweeted_status') and tweet.retweeted_status:
+                            continue
+
+                        user = tweet.user if hasattr(tweet, 'user') and tweet.user else None
+                        followers = getattr(user, 'followers_count', 0) if user else 0
+                        if followers < MIN_FOLLOWERS:
+                            continue
+
+                        tweet_data = {
+                            'tweet_id': tweet.id,
+                            'token': token.upper(),
+                            'text': tweet.text,
+                            'username': getattr(user, 'screen_name', 'unknown') if user else 'unknown',
+                            'followers': followers,
+                            'following': getattr(user, 'following_count', getattr(user, 'friends_count', 0)) if user else 0,
+                            'bio': getattr(user, 'description', None) if user else None,
+                            'profile_image_custom': hasattr(user, 'profile_image_url') if user else False,
+                            'verified': getattr(user, 'verified', False) if user else False,
+                            'retweets': getattr(tweet, 'retweet_count', 0) or 0,
+                            'likes': getattr(tweet, 'favorite_count', 0) or 0,
+                            'replies': getattr(tweet, 'reply_count', 0) or 0,
+                            'quotes': getattr(tweet, 'quote_count', 0) or 0,
+                            'created_at': getattr(tweet, 'created_at', datetime.now()),
+                            'timestamp': datetime.now(),
+                            'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
+                            'hashtag_count': tweet.text.count('#')
+                        }
+
+                        collected.append(tweet_data)
+
+                print(f"[OK] Collected {len(collected)} quality tweets for {token}")
+                return collected
+
+            except TooManyRequests as e:
+                attempt += 1
+                reset_time = datetime.fromtimestamp(e.rate_limit_reset)
+                wait_seconds = (reset_time - datetime.now()).total_seconds() + randint(5, 10)
+                print(f"Rate limited on ${token}. Attempt {attempt}/{MAX_RATE_LIMIT_ACCOUNT_SWITCHES}")
+
+                if self._swap_account_after_rate_limit():
+                    await asyncio.sleep(randint(2, 4))
+                    continue
+
+                wait_seconds = max(wait_seconds, 5)
+                print(f"Waiting {int(wait_seconds)}s for rate limit reset...")
+                await asyncio.sleep(wait_seconds)
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
+                    print(f"[WARN] Authentication error detected: {e}")
+
+                    # Try to refresh cookies for this account
+                    if self._handle_auth_error():
+                        print(f"[OK] Cookies refreshed, retrying {token}...")
+                        await asyncio.sleep(randint(2, 4))
+                        attempt += 1
+                        continue
+                    else:
+                        # Couldn't refresh, try rotating to another account
+                        if self._swap_account_after_rate_limit():
+                            print(f"[OK] Rotated to another account, retrying {token}...")
+                            await asyncio.sleep(randint(2, 4))
+                            attempt += 1
+                            continue
+                        else:
+                            print(f"[ERROR] Unable to recover from auth error, skipping {token}")
+                            break
+
+                print(f"[ERROR] Failed to fetch {token}: {e}")
+                break
+
+        print(f"[WARN] Exhausted rate limit retries for ${token}, skipping for now")
+        return []
 
     def save_to_db(self, all_tweets):
         """Save tweets with volume tracking and enhanced metrics"""
@@ -264,7 +348,7 @@ class TwitterTokenScraperBase:
                     engagement_data = {'retweets': tweet['retweets'], 'likes': tweet['likes']}
 
                     influence_weight = calculate_influence_weight(user_data, engagement_data)
-                    weighted_sentiment = sentiment * influence_weight
+                    weighted_sentiment = sentiment * influence_weight * 100
 
                     # Bot probability
                     bot_prob = calculate_bot_probability(user_data)
@@ -280,6 +364,16 @@ class TwitterTokenScraperBase:
                         alert_level = "LOW"
                     else:
                         alert_level = None
+
+                    # Validate all sentiment metrics before database insert
+                    validated = validate_sentiment_data(
+                        sentiment_score=sentiment,
+                        bot_probability=bot_prob,
+                        pump_score=pump_score if pump_score > 0.5 else 0.0,
+                        influence_weight=influence_weight,
+                        volume_spike=volume_spike,
+                        token=token
+                    )
 
                     try:
                         cursor.execute("""
@@ -297,8 +391,8 @@ class TwitterTokenScraperBase:
                             tweet['tweet_id'],
                             token,
                             tweet['text'],
-                            round(sentiment, 4),
-                            'positive' if sentiment > 0.1 else 'negative' if sentiment < -0.1 else 'neutral',
+                            round(validated['sentiment_score'], 4),
+                            'positive' if validated['sentiment_score'] > 0.1 else 'negative' if validated['sentiment_score'] < -0.1 else 'neutral',
                             tweet['username'],
                             tweet['followers'],
                             tweet['retweets'],
@@ -307,13 +401,13 @@ class TwitterTokenScraperBase:
                             tweet['quotes'],
                             tweet['created_at'],
                             tweet['timestamp'],
-                            round(weighted_sentiment, 4),
+                            round(validated['sentiment_score'] * validated['influence_weight'] * 100, 4),
                             alert_level,
                             tweet['followers'] >= 100000,
-                            round(volume_spike, 2),
-                            round(bot_prob, 3),
-                            round(pump_score, 3) if pump_score > 0.5 else None,
-                            round(influence_weight, 4),
+                            round(validated['volume_spike'], 2),
+                            round(validated['bot_probability'], 3),
+                            round(validated['pump_score'], 3) if validated['pump_score'] > 0.5 else None,
+                            round(validated['influence_weight'], 4),
                             self.source,  # Source identifier from child class
                             tweet.get('verified', False),
                             tweet.get('has_urls', False),
@@ -386,8 +480,10 @@ class TwitterTokenScraperBase:
                         print(f"[RETRY] Retrying all tokens with fresh client...")
                         continue
                     else:
-                        print(f"[FATAL] Failed to refresh cookies. Skipping this cycle.")
-                        break
+                        backoff = min(30, 5 * (refresh_attempt + 1))
+                        print(f"[WARN] Cookie refresh attempt {refresh_attempt + 1} failed. Waiting {backoff}s before retry.")
+                        await asyncio.sleep(backoff)
+                        continue
                 else:
                     print(f"[ERROR] Unexpected error: {e}")
                     break
@@ -482,6 +578,12 @@ class TwitterTokenScraperBase:
         self.init_db()
         self.init_vader()
         self.init_twitter_client()
+
+        # Stagger first cycle so concurrent scrapers do not refresh simultaneously
+        initial_delay = randint(0, 120)
+        if initial_delay > 0:
+            print(f"[INIT] Waiting {initial_delay}s before first cycle to stagger refresh window...")
+            await asyncio.sleep(initial_delay)
 
         while True:
             try:
