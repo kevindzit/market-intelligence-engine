@@ -13,7 +13,16 @@
       "Bash(cut:*)",
       "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" scripts/create_market_metrics_table.py)",
       "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/market_analyzer.py)",
-      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" scripts/verify_market_metrics_fix.py)"
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" scripts/verify_market_metrics_fix.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/ai_trader.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/config.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/browser_ai.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" test_optimized_system.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile test_browser_ai.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile test_simple_browser.py)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/test_simple_browser.py)",
+      "Bash(mv:*)",
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/browser_llm.py)"
     ],
     "deny": [],
     "ask": []

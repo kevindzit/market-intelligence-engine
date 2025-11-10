@@ -29,11 +29,17 @@ DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 # 3. Shows interesting activity patterns
 MAX_TOKENS_PER_CYCLE = 20  # Process top 20 most active tokens per cycle
 
-# Decision cycle frequency (in seconds)
-DECISION_INTERVAL = 30 * 60  # 30 minutes (gives ~1.5 min per token for 20 tokens)
+# Decision cycle frequency (in seconds) - OPTIMIZED FOR PERFORMANCE
+# Research shows 5-minute intervals achieve 9-11x returns vs 30-min
+DECISION_INTERVAL = 5 * 60  # 5 minutes - optimal for catching opportunities
+DEEP_ANALYSIS_INTERVAL = 15 * 60  # 15 minutes - full token sweep
 
-# Tactical monitoring frequency (in seconds)
-TACTICAL_MONITOR_INTERVAL = 2 * 60  # 2 minutes for high-frequency events
+# Tactical monitoring frequency (in seconds) - FASTER RESPONSE
+TACTICAL_MONITOR_INTERVAL = 1 * 60  # 1 minute for HFT opportunities
+
+# Always-on monitoring for critical tokens (never miss major market moves)
+ALWAYS_MONITOR_TOKENS = ['BTC', 'ETH', 'SOL']  # Top 3 by volume/importance
+ALWAYS_MONITOR_INTERVAL = 5 * 60  # Analyze these every 5 min regardless of filters
 
 # Trading mode
 PAPER_TRADING = True  # IMPORTANT: Keep True until validated
@@ -70,7 +76,7 @@ MAX_HOLD_TIME_HOURS = 48  # Auto-exit if position held > 48 hours
 # Circuit breakers
 MAX_DAILY_DRAWDOWN_PCT = 10.0  # Halt trading if down >10% in one day
 MAX_CONSECUTIVE_LOSSES = 5  # Halt after 5 consecutive losing trades
-MAX_DAILY_TRADES = 10  # Max trades per day (prevent overtrading)
+MAX_DAILY_TRADES = 20  # Increased from 10 - more opportunities with 5-min cycles
 
 # Trading fees (for paper trading realism)
 TRADING_FEE_PCT = 0.1  # 0.1% per trade (realistic for Binance/Coinbase)
@@ -80,7 +86,20 @@ SLIPPAGE_PCT = 0.05  # 0.05% slippage (conservative estimate)
 # AI MODEL CONFIGURATION
 # ============================================================================
 
-# Tier 1: Claude Sonnet 4 (fast screening)
+# Browser-based AI System (using Selenium to avoid API costs)
+USE_BROWSER_AI = True  # Use browser instead of API calls
+BROWSER_AI_PROVIDER = 'claude'  # Which AI to use: 'claude' or 'chatgpt'
+BROWSER_HEADLESS = True  # Run browser in background (set False for debugging)
+BROWSER_AI_TIMEOUT = 30  # Seconds to wait for browser response
+
+# Dynamic frequency adjustment based on volatility
+ENABLE_DYNAMIC_FREQUENCY = True  # Adjust analysis frequency based on market conditions
+VOLATILITY_EXTREME_THRESHOLD = 0.10  # >10% = 1-min analysis
+VOLATILITY_HIGH_THRESHOLD = 0.05  # >5% = 3-min analysis
+VOLATILITY_NORMAL_THRESHOLD = 0.02  # >2% = 5-min analysis
+VOLATILITY_LOW_THRESHOLD = 0.02  # <2% = 10-min analysis
+
+# Legacy API settings (kept for fallback if browser fails)
 CLAUDE_API_KEY = os.getenv('ANTHROPIC_KEY', '')  # Using your env var name
 CLAUDE_MODEL = 'claude-sonnet-4-5-20250929'  # Latest Sonnet 4.5 model
 CLAUDE_MAX_TOKENS = 1000

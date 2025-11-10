@@ -27,6 +27,7 @@ try:
     from crypto_ai_trader.market_analyzer import MarketAnalyzer
     from crypto_ai_trader.ai_optimizer import AIOptimizer
     from crypto_ai_trader.trade_learner import TradeLearner
+    from crypto_ai_trader.browser_ai import get_browser_ai, cleanup_all_browsers
     from crypto_ai_trader import config
 except ImportError:
     # Fall back to local imports (for running directly)
@@ -35,6 +36,7 @@ except ImportError:
     from market_analyzer import MarketAnalyzer
     from ai_optimizer import AIOptimizer
     from trade_learner import TradeLearner
+    from browser_ai import get_browser_ai, cleanup_all_browsers
     import config
 
 load_dotenv()
@@ -135,6 +137,14 @@ class AITrader:
         """Handle graceful shutdown"""
         print("\n[SHUTDOWN] Received shutdown signal...")
         self.trading_active = False
+
+        # Cleanup browser instances if using browser AI
+        try:
+            if hasattr(config, 'USE_BROWSER_AI') and config.USE_BROWSER_AI:
+                print("[SHUTDOWN] Closing browser sessions...")
+                cleanup_all_browsers()
+        except:
+            pass
 
         # Print AI performance insights
         print("\n" + "="*60)
@@ -367,7 +377,7 @@ class AITrader:
                 self.check_partial_profit_targets()
 
                 # ===========================================================
-                # FAST CYCLE: Check tactical alerts EVERY 2 minutes
+                # FAST CYCLE: Check tactical alerts EVERY 1 minute (optimized)
                 # ===========================================================
                 tactical_alerts = self.check_tactical_alerts()
                 if tactical_alerts:
@@ -386,12 +396,13 @@ class AITrader:
                                 deferred_alerts.append(decision)
 
                 # ===========================================================
-                # SLOW CYCLE: Strategic analysis every 30 minutes
+                # STRATEGIC CYCLE: Analysis every 5 minutes (optimized from 30)
+                # Research shows 9-11x returns with 5-min intervals
                 # ===========================================================
                 time_since_strategic = time.time() - last_strategic_analysis
 
                 if time_since_strategic >= strategic_interval:
-                    print(f"\n[STRATEGIC] Running 30-minute comprehensive analysis...")
+                    print(f"\n[STRATEGIC] Running 5-minute strategic analysis...")
 
                     # Discover all active tokens
                     active_tokens = self.data_intel.discover_active_tokens(min_activity_hours=24)
@@ -459,7 +470,35 @@ class AITrader:
 
                     # Update last strategic analysis time
                     last_strategic_analysis = time.time()
-                    print(f"[STRATEGIC] Next strategic analysis in 30 minutes")
+                    print(f"[STRATEGIC] Next strategic analysis in 5 minutes")
+
+                # ===========================================================
+                # ALWAYS-ON MONITORING: Top tokens every 5 minutes
+                # Never miss major market moves in BTC/ETH/SOL
+                # ===========================================================
+                if time_since_strategic >= config.ALWAYS_MONITOR_INTERVAL:
+                    print(f"\n[ALWAYS-ON] Monitoring critical tokens: {config.ALWAYS_MONITOR_TOKENS}")
+
+                    for token in config.ALWAYS_MONITOR_TOKENS:
+                        try:
+                            # Skip filters - always analyze these tokens
+                            summary = self.data_intel.get_quick_summary(token)
+                            if summary:
+                                # Direct to AI analysis (bypass activity filters)
+                                print(f"  Analyzing {token} (always-on)...")
+                                signal = await self.analyze_token(token, summary)
+
+                                if signal and signal['action'] != 'HOLD':
+                                    # High-priority tokens get immediate execution
+                                    if executed_trades < config.MAX_DAILY_TRADES:
+                                        success = await self.execute_decision(signal)
+                                        if success:
+                                            executed_trades += 1
+                                            print(f"  ✓ Executed {signal['action']} on {token}")
+
+                        except Exception as e:
+                            print(f"  [ERROR] Failed to monitor {token}: {e}")
+                            continue
 
                 # Update portfolio state
                 self.portfolio.update_positions()
@@ -477,7 +516,7 @@ class AITrader:
                 if executed_trades > 0:
                     print(f"  🎯 Trades executed: {executed_trades}")
                 print(f"  Portfolio value: ${self.portfolio.get_total_value():,.2f}")
-                print(f"  Next tactical check: 2 minutes")
+                print(f"  Next tactical check: 1 minute")
                 if time_since_strategic < strategic_interval:
                     mins_until_strategic = (strategic_interval - time_since_strategic) / 60
                     print(f"  Next strategic analysis: {mins_until_strategic:.1f} minutes")
@@ -644,8 +683,24 @@ class AITrader:
         return context
 
     async def get_claude_decision(self, token: str, context: Dict) -> Optional[Dict]:
-        """Generate trading decision using Claude Sonnet with learned adjustments"""
+        """Generate trading decision using Browser AI or API fallback"""
         try:
+            # Use browser AI if enabled (avoids API costs)
+            if config.USE_BROWSER_AI:
+                provider = getattr(config, 'BROWSER_AI_PROVIDER', 'claude')
+                browser_ai = get_browser_ai(provider)
+
+                # Get decision from browser
+                decision = browser_ai.get_trading_decision(token, context)
+
+                if decision:
+                    print(f"[BROWSER AI] Got decision from {browser_ai.provider}")
+                    return decision
+                else:
+                    print(f"[BROWSER AI] Failed, falling back to API")
+                    # Fall through to API method
+
+            # Original API method (fallback)
             # Apply learned adjustments from Trade Learner
             learned_adjustment = self.trade_learner.get_learned_adjustment(
                 token=token,
