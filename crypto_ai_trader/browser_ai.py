@@ -150,15 +150,97 @@ DEEPSEEK_THINKING_MARKERS = (
     'deepseek is thinking',
     'scratchpad',
     'analysis:',
+    'analysis step',
     'deliberation',
     'reasoning trail',
     'reasoning:',
+    'reasoning step',
     'hmm',
     'let me think',
     'notes:',
     'reflection',
     'plan:',
+    'goal:',
+    'subgoal',
+    'search results',
+    'tool call',
+    'calling tool',
+    'web search',
+    'calc',
 )
+
+DEEPSEEK_REASONING_KEYWORDS = (
+    'analysis',
+    'thinking',
+    'think',
+    'thought',
+    'reasoning',
+    'scratchpad',
+    'plan',
+    'goal',
+    'steps',
+    'step',
+    'observation',
+    'action',
+    'deliberation',
+    'reflection',
+    'tool',
+    'function call',
+    'web search',
+    'result',
+    'results',
+    'intermediate',
+    'draft',
+    'brainstorm',
+    'hmm',
+    'note:',
+    'notes:',
+    'calc',
+    'calculation',
+    'progress',
+    'continue thinking',
+    'keep thinking',
+    'gathering',
+    'context',
+    'analysis step',
+)
+
+DEEPSEEK_REASONING_PATTERNS = [
+    re.compile(r'^\s*\d+(\.|:)\s'),
+    re.compile(r'^\s*step\s*\d+', re.IGNORECASE),
+    re.compile(r'^\s*[-•]+\s*(analysis|step|result|goal)', re.IGNORECASE),
+    re.compile(r'^\s*(analysis|reasoning|plan|goal)\b', re.IGNORECASE),
+    re.compile(r'^\s*tool call', re.IGNORECASE),
+    re.compile(r'^\s*search results', re.IGNORECASE),
+]
+
+DEEPSEEK_SHORT_ANSWER_WHITELIST = {
+    'yes',
+    'no',
+    'ok',
+    'okay',
+    'sure',
+    'maybe',
+    'fine',
+    'good',
+    'great',
+    '4',
+    '5',
+    '6',
+    '7',
+    '8',
+    '9',
+    '10',
+    '42',
+    'true',
+    'false',
+    'none',
+    'null',
+    'n/a',
+    'paris',
+    'tokyo',
+    'london',
+}
 
 CLAUDE_REASONING_MARKERS = (
     'thinking about',
@@ -216,8 +298,7 @@ def strip_deepseek_thinking(text: str) -> str:
 
     filtered_lines = []
     for line in lines:
-        lowered = line.lower()
-        if any(marker in lowered for marker in DEEPSEEK_THINKING_MARKERS):
+        if deepseek_line_is_reasoning(line):
             continue
         filtered_lines.append(line)
 
@@ -453,6 +534,33 @@ class BrowserAI:
             except Exception:
                 break
         return last_text
+
+    def _wait_for_deepseek_answer(self, selector: str, initial_text: str, extra_seconds: int = 8) -> str:
+        """Give DeepSeek a little longer to replace reasoning output with the final answer."""
+        if self.provider != 'deepseek' or not self.driver or not selector:
+            return initial_text
+        baseline = (initial_text or "").strip()
+        baseline_len = len(baseline)
+        last_text = baseline
+        end_time = time.time() + max(4, extra_seconds)
+
+        while time.time() < end_time:
+            time.sleep(0.5)
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if not elements:
+                    continue
+                current_text = (elements[-1].text or "").strip()
+                if not current_text:
+                    continue
+                if current_text != last_text:
+                    last_text = current_text
+                if len(current_text) > baseline_len + 5 or not deepseek_response_is_reasoning(current_text):
+                    return current_text
+            except Exception:
+                break
+
+        return last_text or baseline
 
         print(f"✓ {provider.upper()} browser initialized")
 
@@ -1107,6 +1215,12 @@ class BrowserAI:
                         final_response,
                         max(6, timeout // 2),
                     )
+                elif self.provider == 'deepseek' and deepseek_response_is_reasoning(final_response):
+                    final_response = self._wait_for_deepseek_answer(
+                        working_selector,
+                        final_response,
+                        max(6, timeout // 2),
+                    )
                 # Clean up UI elements from the response
                 ui_elements = [
                     'Retry',
@@ -1134,6 +1248,10 @@ class BrowserAI:
                     final_response = strip_claude_reasoning_lines(final_response)
 
                 final_response = final_response.strip()
+
+                if self.provider == 'deepseek' and deepseek_response_is_reasoning(final_response):
+                    print("❌ DeepSeek response still looks like reasoning; giving up")
+                    return None
 
                 if not final_response:
                     print("❌ Response element exists but only contained status text")
@@ -1350,3 +1468,42 @@ def cleanup_all_browsers():
 
     _browser_instances.clear()
     print("✓ All browsers closed")
+def deepseek_line_is_reasoning(line: str) -> bool:
+    """Heuristic to determine if a single line is intermediate reasoning."""
+    if not line:
+        return True
+    stripped = line.strip()
+    if not stripped:
+        return True
+    lowered = stripped.lower()
+    if any(marker in lowered for marker in DEEPSEEK_THINKING_MARKERS):
+        return True
+    if any(keyword in lowered for keyword in DEEPSEEK_REASONING_KEYWORDS):
+        return True
+    for pattern in DEEPSEEK_REASONING_PATTERNS:
+        if pattern.search(stripped):
+            return True
+    if len(stripped) <= 4:
+        if stripped.lower() not in DEEPSEEK_SHORT_ANSWER_WHITELIST and not stripped.isdigit():
+            return True
+    return False
+
+
+def deepseek_response_is_reasoning(text: str) -> bool:
+    """Determine if the whole DeepSeek response still looks like reasoning."""
+    if not text:
+        return True
+    stripped = text.strip()
+    if not stripped:
+        return True
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if not lines:
+        return True
+    reasoning_lines = sum(1 for line in lines if deepseek_line_is_reasoning(line))
+    if reasoning_lines == len(lines):
+        return True
+    if len(lines) <= 2 and reasoning_lines >= 1:
+        return True
+    if len(stripped) < 8 and stripped.lower() not in DEEPSEEK_SHORT_ANSWER_WHITELIST:
+        return True
+    return False
