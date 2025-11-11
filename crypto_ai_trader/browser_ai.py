@@ -8,6 +8,7 @@ import os
 import json
 import re
 from typing import Dict, Optional
+from urllib.parse import urlparse
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -159,6 +160,40 @@ DEEPSEEK_THINKING_MARKERS = (
     'plan:',
 )
 
+CLAUDE_REASONING_MARKERS = (
+    'thinking about',
+    'gathering my thoughts',
+    'searching the web',
+    'searching for',
+    'planning my response',
+    'looking into this',
+    'drafting a response',
+    'reasoning through this',
+    'exploring information',
+    'collecting information',
+    'checking sources',
+    'checking data',
+    'running searches',
+    'step',
+    'steps',
+    'results',
+    'intermediate reasoning',
+    'tool output',
+    'web search',
+    'scanning',
+    'analysis step',
+    'thinking...',
+    'thinking…',
+)
+
+CLAUDE_REASONING_LINE_PATTERNS = [
+    re.compile(r'^\d+(\.\d+)?\s+(step|steps|result|results)\b'),
+    re.compile(r'^\s*[-•]+\s*(step|result|search)'),
+    re.compile(r'^\s*(search )?results?:', re.IGNORECASE),
+    re.compile(r'searching\s+(the\s+)?web', re.IGNORECASE),
+    re.compile(r'\bthinking\.\.\.$', re.IGNORECASE),
+]
+
 
 def strip_deepseek_thinking(text: str) -> str:
     """Remove DeepSeek's exposed thinking paragraphs, keep only the final answer."""
@@ -190,6 +225,50 @@ def strip_deepseek_thinking(text: str) -> str:
         return "\n".join(filtered_lines).strip()
 
     return lines[-1]
+
+
+def claude_line_is_reasoning(line: str) -> bool:
+    lowered = (line or "").strip().lower()
+    if not lowered:
+        return True
+    for pattern in CLAUDE_REASONING_LINE_PATTERNS:
+        if pattern.search(lowered):
+            return True
+    return any(marker in lowered for marker in CLAUDE_REASONING_MARKERS)
+
+
+def claude_response_is_reasoning(text: str) -> bool:
+    if not text:
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return True
+    reasoning_lines = sum(1 for line in lines if claude_line_is_reasoning(line))
+    if reasoning_lines == len(lines):
+        return True
+    if len(lines) <= 3 and reasoning_lines >= 1:
+        return True
+    return reasoning_lines >= max(1, len(lines) - 1)
+
+
+def strip_claude_reasoning_lines(text: str) -> str:
+    if not text:
+        return ""
+    lines = [line.rstrip() for line in text.splitlines()]
+    # Drop leading reasoning lines
+    cleaned = []
+    skipping = True
+    for line in lines:
+        if skipping and claude_line_is_reasoning(line):
+            continue
+        skipping = False
+        cleaned.append(line.strip())
+    # Drop trailing reasoning lines (e.g., "Thinking...")
+    while cleaned and claude_line_is_reasoning(cleaned[-1]):
+        cleaned.pop()
+    if not cleaned and lines:
+        cleaned = [lines[-1].strip()]
+    return "\n".join(cleaned).strip()
 
 
 class BrowserAI:
@@ -260,6 +339,120 @@ class BrowserAI:
                 'new_chat': 'button[aria-label*="New chat"], button[aria-label*="New conversation"]'
             }
         }
+
+    def clear_site_cache(self) -> bool:
+        """
+        Clear browser cache/storage (excluding cookies) for the provider origin.
+        Returns True if any cache-clear action succeeded.
+        """
+        if not self.driver:
+            return False
+
+        cleared = False
+        try:
+            self.driver.execute_cdp_cmd("Network.clearBrowserCache", {})
+            cleared = True
+        except Exception:
+            pass
+
+        origin = None
+        url = self.urls.get(self.provider)
+        if url:
+            parsed = urlparse(url)
+            if parsed.scheme and parsed.netloc:
+                origin = f"{parsed.scheme}://{parsed.netloc}"
+
+        if origin:
+            try:
+                self.driver.execute_cdp_cmd(
+                    "Storage.clearDataForOrigin",
+                    {
+                        "origin": origin,
+                        "storageTypes": "appcache,shader_cache,service_workers,cache_storage",
+                    },
+                )
+                cleared = True
+            except Exception:
+                pass
+
+        return cleared
+
+    def dismiss_claude_errors(self) -> int:
+        """Close Claude toast errors that stack in the top-right corner."""
+        if self.provider != 'claude' or not self.driver:
+            return 0
+
+        script = """
+        const selectors = [
+            '[data-testid*="toast"]',
+            '[role="alert"]',
+            '[data-test-toast]',
+            '.mantine-Notification-root',
+            '.mantine-Notifications-root div[role="alert"]',
+            '.toast',
+            '.notification'
+        ];
+        let dismissed = 0;
+        const errorPhrases = [
+            "isn't working right now",
+            'try again later',
+            'something went wrong',
+            'error',
+            'failed',
+            'issue'
+        ];
+        const seen = new Set();
+        const isVisible = (el) => {
+            if (!el || !el.isConnected) return false;
+            const rect = el.getBoundingClientRect();
+            return rect && rect.width && rect.height;
+        };
+        selectors.forEach(selector => {
+            document.querySelectorAll(selector).forEach(node => {
+                if (!node || seen.has(node) || !isVisible(node)) return;
+                seen.add(node);
+                const text = (node.innerText || '').toLowerCase();
+                if (!text) return;
+                if (!errorPhrases.some(p => text.includes(p))) return;
+                const dismissButton = node.querySelector('[aria-label*="close"], [aria-label*="dismiss"], button, [role="button"]');
+                if (dismissButton) {
+                    dismissButton.click();
+                } else if (node.remove) {
+                    node.remove();
+                } else if (node.parentElement) {
+                    node.parentElement.removeChild(node);
+                }
+                dismissed += 1;
+            });
+        });
+        return dismissed;
+        """
+        try:
+            result = self.driver.execute_script(script)
+            return int(result) if isinstance(result, (int, float)) else 0
+        except Exception:
+            return 0
+
+    def _wait_for_claude_answer(self, selector: str, initial_text: str, extra_seconds: int = 8) -> str:
+        """Wait a bit longer for Claude to replace status text with the real response."""
+        if self.provider != 'claude' or not self.driver or not selector:
+            return initial_text
+        end_time = time.time() + max(3, extra_seconds)
+        last_text = initial_text or ""
+        while time.time() < end_time:
+            time.sleep(0.5)
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if not elements:
+                    continue
+                current_text = (elements[-1].text or "").strip()
+                if current_text and current_text != last_text:
+                    if not claude_response_is_reasoning(current_text):
+                        return current_text
+                    last_text = current_text
+            except Exception:
+                break
+        return last_text
 
         print(f"✓ {provider.upper()} browser initialized")
 
@@ -687,6 +880,9 @@ class BrowserAI:
             if self.auto_new_chat:
                 self.try_new_chat()
 
+            if self.provider == 'claude':
+                self.dismiss_claude_errors()
+
             # Find the input field
             input_selector = selectors.get('input')
             if not input_selector:
@@ -905,6 +1101,12 @@ class BrowserAI:
                 final_response = response_elements[-1].text
 
             if final_response:
+                if self.provider == 'claude' and claude_response_is_reasoning(final_response):
+                    final_response = self._wait_for_claude_answer(
+                        working_selector,
+                        final_response,
+                        max(6, timeout // 2),
+                    )
                 # Clean up UI elements from the response
                 ui_elements = [
                     'Retry',
@@ -928,8 +1130,20 @@ class BrowserAI:
 
                 if self.provider == 'deepseek':
                     final_response = strip_deepseek_thinking(final_response)
+                elif self.provider == 'claude':
+                    final_response = strip_claude_reasoning_lines(final_response)
+
+                final_response = final_response.strip()
+
+                if not final_response:
+                    print("❌ Response element exists but only contained status text")
+                    return None
 
                 print(f"✓ Response received ({len(final_response)} chars)")
+
+                if self.provider == 'claude':
+                    self.dismiss_claude_errors()
+
                 return final_response
             else:
                 print(f"❌ Response element exists but no text found")

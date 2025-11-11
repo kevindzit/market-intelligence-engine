@@ -1330,55 +1330,6 @@ def inject_claude_options(browser_ai, options: Dict):
 
     except Exception as e:
         print(f"   {Fore.CYAN}[INFO] Could not set advanced options: {e}{Style.RESET_ALL}")
-
-
-def enable_claude_temporary_chat(browser_ai):
-    """Ensure Claude temporary chat (ghost mode) is enabled"""
-    try:
-        driver = getattr(browser_ai, "driver", None)
-        if not driver:
-            return
-
-        script = """
-        const keywords = ['temporary chat', 'ghost', 'private chat', 'history off', 'incognito'];
-        const elements = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"], span[role="button"]'));
-        for (const el of elements) {
-            if (!el || el.offsetParent === null) continue;
-            const label = [
-                el.getAttribute('aria-label') || '',
-                el.innerText || '',
-                el.getAttribute('title') || ''
-            ].join(' ').trim().toLowerCase();
-            if (!label) continue;
-            if (keywords.some(k => label.includes(k))) {
-                const ariaPressed = (el.getAttribute('aria-pressed') || '').toLowerCase();
-                const ariaChecked = (el.getAttribute('aria-checked') || '').toLowerCase();
-                const dataState = (el.getAttribute('data-state') || '').toLowerCase();
-                const isActive = ariaPressed === 'true' || ariaChecked === 'true' || dataState === 'on' || el.classList.contains('bg-white/10');
-                if (!isActive) {
-                    el.click();
-                    return {status: 'clicked', label};
-                }
-                return {status: 'already_on', label};
-            }
-        }
-        return {status: 'not_found'};
-        """
-
-        result = driver.execute_script(script)
-        if isinstance(result, dict):
-            status = result.get('status')
-            label = result.get('label', 'temporary chat')
-            if status == 'clicked':
-                print(f"   {Fore.GREEN}[OK] Enabled Claude temporary chat ({label}){Style.RESET_ALL}")
-            elif status == 'already_on':
-                print(f"   {Fore.CYAN}[INFO] Claude temporary chat already enabled{Style.RESET_ALL}")
-            else:
-                print(f"   {Fore.CYAN}[INFO] Could not find Claude temporary chat toggle{Style.RESET_ALL}")
-    except Exception as e:
-        print(f"   {Fore.CYAN}[INFO] Could not enable Claude temporary chat: {e}{Style.RESET_ALL}")
-
-
 def inject_deepseek_options(browser_ai, options: Dict):
     """
     Inject DeepSeek-specific options (DeepThink and Search toggles)
@@ -1883,6 +1834,13 @@ def main():
         print(f"{Fore.YELLOW}[INFO] Opening browser window...{Style.RESET_ALL}")
         browser_ai.driver = uc.Chrome(options=chrome_options)
 
+        if provider == 'claude':
+            try:
+                if browser_ai.clear_site_cache():
+                    print(f"   {Fore.CYAN}[INFO] Cleared Claude cache (cookies preserved){Style.RESET_ALL}")
+            except Exception as cache_error:
+                print(f"   {Fore.CYAN}[INFO] Cache clear skipped: {cache_error}{Style.RESET_ALL}")
+
         driver = browser_ai.driver
         url = browser_ai.urls.get(provider)
         if not url:
@@ -1975,7 +1933,6 @@ def main():
         if provider == 'claude':
             if options:
                 inject_claude_options(browser_ai, options)
-            enable_claude_temporary_chat(browser_ai)
         elif provider == 'deepseek' and options:
             inject_deepseek_options(browser_ai, options)
 
