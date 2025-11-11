@@ -183,6 +183,33 @@ def get_claude_options() -> Dict:
     return options
 
 
+def get_chatgpt_options(model_name: Optional[str] = None, model_selector: Optional[str] = None) -> Dict:
+    """Get ChatGPT-specific options"""
+    options = {}
+
+    print(f"\n{Fore.YELLOW}ChatGPT Options:{Style.RESET_ALL}")
+    print("-" * 80)
+
+    # Only show thinking level option if "Thinking" mode is selected (not "Thinking mini")
+    if model_name == 'Thinking' and model_selector == 'Thinking':
+        print(f"\n{Fore.CYAN}Thinking Level:{Style.RESET_ALL}")
+        print("  Standard: Default thinking level")
+        print("  Extended: Longer, more thorough thinking")
+
+        while True:
+            thinking_level = input(f"\n  {Fore.WHITE}Select thinking level (s=Standard/e=Extended, default=Standard): {Style.RESET_ALL}").strip().lower()
+            if thinking_level in ['', 's', 'standard']:
+                options['thinking_level'] = 'standard'
+                break
+            elif thinking_level in ['e', 'extended']:
+                options['thinking_level'] = 'extended'
+                break
+            else:
+                print(f"  {Fore.RED}Invalid choice. Please enter 's' for Standard or 'e' for Extended.{Style.RESET_ALL}")
+
+    return options
+
+
 def get_deepseek_options() -> Dict:
     """Get DeepSeek-specific options"""
     options = {}
@@ -207,7 +234,7 @@ def get_deepseek_options() -> Dict:
     return options
 
 
-def get_prompt_options(provider: str) -> tuple[str, Dict]:
+def get_prompt_options(provider: str, model_name: Optional[str] = None, model_selector: Optional[str] = None) -> tuple[str, Dict]:
     """Get prompt and provider-specific options"""
     print(f"\n{Fore.YELLOW}Prompt Configuration:{Style.RESET_ALL}")
     print("-" * 80)
@@ -226,8 +253,7 @@ def get_prompt_options(provider: str) -> tuple[str, Dict]:
     if provider == 'claude':
         options = get_claude_options()
     elif provider == 'chatgpt':
-        print(f"\n{Fore.YELLOW}ChatGPT Options:{Style.RESET_ALL}")
-        print("  Using default GPT settings")
+        options = get_chatgpt_options(model_name, model_selector)
     elif provider == 'deepseek':
         options = get_deepseek_options()
     elif provider == 'gemini':
@@ -1008,6 +1034,260 @@ def inject_chatgpt_model_selection(browser_ai, model_selector: str):
         print(f"   {Fore.YELLOW}[WARNING] Model selection error: {e}{Style.RESET_ALL}")
 
 
+def inject_chatgpt_thinking_level(browser_ai, thinking_level: str):
+    """
+    Inject ChatGPT thinking level (Standard/Extended) - only for "Thinking" model.
+
+    The UI remembers whichever thinking length you last picked, so we must explicitly
+    open the timing chip every run and re-select the requested option.
+    """
+    try:
+        import time
+        from selenium.webdriver.common.action_chains import ActionChains
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
+
+        driver = getattr(browser_ai, "driver", None)
+        if not driver:
+            print(f"   {Fore.YELLOW}[WARNING] Browser not initialized; cannot set thinking level{Style.RESET_ALL}")
+            return
+
+        desired_level = (thinking_level or "standard").strip().lower()
+        if desired_level not in ("standard", "extended"):
+            desired_level = "standard"
+
+        wait = WebDriverWait(driver, 12)
+
+        print(f"   {Fore.YELLOW}[INFO] Setting thinking level to: {desired_level.title()}{Style.RESET_ALL}")
+        print(f"   {Fore.CYAN}[INFO] Locating Thinking/Extended chip...{Style.RESET_ALL}")
+
+        def safe_click(element) -> bool:
+            """Click helper that tries native click, Actions, and JS."""
+            try:
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
+                    element,
+                )
+                time.sleep(0.1)
+            except Exception:
+                pass
+
+            for clicker in (
+                lambda: element.click(),
+                lambda: ActionChains(driver).move_to_element(element).click().perform(),
+                lambda: driver.execute_script("arguments[0].click();", element),
+            ):
+                try:
+                    clicker()
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        def find_thinking_chip():
+            """Return the visible chip element near the composer."""
+            script = """
+                const visible = (el) => {
+                    if (!el) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect && rect.width > 40 && rect.width < 360 &&
+                           rect.height > 20 && rect.height < 96;
+                };
+                const labelFor = (el) => {
+                    const parts = [
+                        (el.innerText || el.textContent || ''),
+                        el.getAttribute('aria-label') || ''
+                    ];
+                    return parts.join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+                };
+                const candidates = [];
+                const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+                const elements = Array.from(document.querySelectorAll('button, div[role="button"], span[role="button"]'));
+                for (const el of elements) {
+                    if (!visible(el)) continue;
+                    const text = labelFor(el);
+                    if (!text || !text.includes('thinking')) continue;
+                    if (text.includes('mini') || text.includes('instant') || text.includes('auto')) continue;
+                    const rect = el.getBoundingClientRect();
+                    // Prefer chips that live near the composer (bottom of the page).
+                    candidates.push({ el, top: rect.top, hasExtended: text.includes('extended') });
+                }
+                if (!candidates.length) {
+                    return null;
+                }
+                candidates.sort((a, b) => {
+                    if (a.hasExtended !== b.hasExtended) {
+                        return a.hasExtended ? -1 : 1;
+                    }
+                    return b.top - a.top;
+                });
+                return candidates[0].el;
+            """
+            try:
+                return driver.execute_script(script)
+            except Exception:
+                return None
+
+        def option_labels(level: str) -> list[str]:
+            if level == "extended":
+                return ["extended", "extended thinking"]
+            return ["standard", "standard thinking"]
+
+        def find_dropdown_option(level: str):
+            """Return the dropdown item element for the requested level."""
+            script = """
+                const targets = arguments[0];
+                const visible = (el) => {
+                    if (!el) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect && rect.width > 0 && rect.height > 0;
+                };
+                const menus = Array.from(document.querySelectorAll('[data-radix-portal], [role="menu"], [role="listbox"]'));
+                const matches = [];
+                for (const root of menus) {
+                    if (!visible(root)) continue;
+                    const rootText = (root.innerText || root.textContent || '').toLowerCase();
+                    const items = Array.from(root.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"], button, div, span'));
+                    for (const rawItem of items) {
+                        const item = rawItem.closest('[role="menuitem"], [role="menuitemradio"], [role="option"], button') || rawItem;
+                        if (!visible(item)) continue;
+                        const label = (item.innerText || item.textContent || item.getAttribute('aria-label') || '')
+                            .replace(/\\s+/g, ' ').trim().toLowerCase();
+                        if (!label) continue;
+                        if (targets.includes(label)) {
+                            const priority = rootText.includes('thinking time') ? 0 : 1;
+                            matches.push({ el: item, priority });
+                        }
+                    }
+                }
+                if (!matches.length) {
+                    return null;
+                }
+                matches.sort((a, b) => a.priority - b.priority);
+                return matches[0].el;
+            """
+            try:
+                return driver.execute_script(script, option_labels(level))
+            except Exception:
+                return None
+
+        def click_dropdown_option(level: str):
+            """Click option directly via JS to avoid element state issues."""
+            script = """
+                const targets = arguments[0];
+                const visible = (el) => {
+                    if (!el) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect && rect.width > 0 && rect.height > 0;
+                };
+                const menus = Array.from(document.querySelectorAll('[data-radix-portal], [role="menu"], [role="listbox"]'));
+                const result = { clicked: false, reason: 'not_found' };
+                for (const root of menus) {
+                    if (!visible(root)) continue;
+                    const items = Array.from(root.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"], button, div, span'));
+                    for (const rawItem of items) {
+                        const item = rawItem.closest('[role="menuitem"], [role="menuitemradio"], [role="option"], button') || rawItem;
+                        if (!visible(item)) continue;
+                        const label = (item.innerText || item.textContent || item.getAttribute('aria-label') || '')
+                            .replace(/\\s+/g, ' ').trim().toLowerCase();
+                        if (!label || !targets.includes(label)) continue;
+                        try {
+                            item.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                            item.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                        } catch (err) {}
+                        try {
+                            item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                            item.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                        } catch (err) {}
+                        try {
+                            item.click();
+                        } catch (err) {}
+                        return { clicked: true, label };
+                    }
+                }
+                return result;
+            """
+            try:
+                return driver.execute_script(script, option_labels(level))
+            except Exception as js_error:
+                return {"clicked": False, "reason": str(js_error)}
+
+        def chip_state():
+            """Return normalized chip label text."""
+            chip = find_thinking_chip()
+            if not chip:
+                return ""
+            try:
+                text = driver.execute_script(
+                    "return (arguments[0].innerText || arguments[0].textContent || arguments[0].getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim().toLowerCase();",
+                    chip,
+                )
+                return text or ""
+            except StaleElementReferenceException:
+                return ""
+
+        # Wait for the chip to be present once after model selection.
+        try:
+            wait.until(lambda _: find_thinking_chip() is not None)
+        except TimeoutException:
+            print(f"   {Fore.YELLOW}[WARNING] Could not find Thinking chip after selecting model{Style.RESET_ALL}")
+            return
+
+        option_element = None
+        for attempt in range(3):
+            chip = find_thinking_chip()
+            if not chip:
+                time.sleep(0.5)
+                continue
+            if not safe_click(chip):
+                time.sleep(0.4)
+                continue
+            # Allow dropdown animation to render.
+            time.sleep(0.3)
+            try:
+                option_element = WebDriverWait(driver, 5).until(lambda _: find_dropdown_option(desired_level))
+                break
+            except TimeoutException:
+                option_element = None
+                time.sleep(0.4)
+
+        if not option_element:
+            print(f"   {Fore.YELLOW}[WARNING] Thinking dropdown did not appear; leaving previous selection{Style.RESET_ALL}")
+            return
+
+        js_click_result = click_dropdown_option(desired_level)
+        if not js_click_result.get("clicked"):
+            if not safe_click(option_element):
+                print(f"   {Fore.YELLOW}[WARNING] Could not click desired thinking level option{Style.RESET_ALL}")
+                return
+        else:
+            clicked_label = js_click_result.get("label", desired_level)
+            print(f"   {Fore.GREEN}[OK] Clicked {clicked_label.title()} option{Style.RESET_ALL}")
+
+        # Wait for chip text to reflect the requested level.
+        def desired_state_met():
+            text = chip_state()
+            if not text:
+                return False
+            if desired_level == "extended":
+                return "extended" in text
+            return "extended" not in text  # Standard chip just says "Thinking"
+
+        try:
+            wait.until(lambda _: desired_state_met())
+            current = chip_state() or desired_level
+            print(f"   {Fore.GREEN}[OK] Thinking level set to: {current.title()}{Style.RESET_ALL}")
+        except TimeoutException:
+            current = chip_state() or "unknown"
+            print(
+                f"   {Fore.YELLOW}[WARNING] Could not confirm thinking level change (chip shows '{current}')"
+                f"{Style.RESET_ALL}"
+            )
+
+    except Exception as e:
+        print(f"   {Fore.CYAN}[INFO] Could not set thinking level: {e}{Style.RESET_ALL}")
+
+
 def inject_claude_options(browser_ai, options: Dict):
     """
     Inject Claude-specific options like thinking mode
@@ -1575,7 +1855,7 @@ def main():
     model_name, model_selector = select_model(provider)
 
     # Get prompt and options
-    prompt, options = get_prompt_options(provider)
+    prompt, options = get_prompt_options(provider, model_name, model_selector)
 
     # Show summary
     print(f"\n{Fore.YELLOW}Configuration Summary:{Style.RESET_ALL}")
@@ -1680,6 +1960,11 @@ def main():
             inject_claude_model_selection(browser_ai, model_selector)
         elif provider == 'chatgpt':
             inject_chatgpt_model_selection(browser_ai, model_selector)
+            # Force the thinking-level chip to open whenever the Thinking model is chosen
+            if model_selector == 'Thinking':
+                desired_level = (options or {}).get('thinking_level', 'standard')
+                time.sleep(0.5)
+                inject_chatgpt_thinking_level(browser_ai, desired_level)
         elif provider == 'gemini':
             ensure_gemini_new_chat(browser_ai)
             inject_gemini_model_selection(browser_ai, model_selector)

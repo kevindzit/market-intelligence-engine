@@ -23,7 +23,8 @@
       "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/test_simple_browser.py)",
       "Bash(mv:*)",
       "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile crypto_ai_trader/browser_llm.py)",
-      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile browser_workspace/browser_llm.py)"
+      "Bash(\"C:\\venvs\\pjxvenv\\Scripts\\python.exe\" -m py_compile browser_workspace/browser_llm.py)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []

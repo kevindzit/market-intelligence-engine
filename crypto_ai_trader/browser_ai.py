@@ -813,9 +813,58 @@ class BrowserAI:
             print(f"⏳ Waiting for {self.provider.upper()} response...")
 
             wait_start = time.time()
-            working_selector, response_elements = wait_for_new_response(previous_counts, timeout)
+
+            # Try to get response with refresh logic for ChatGPT
+            refresh_attempted = False
+            working_selector = None
+            response_elements = None
+
+            try:
+                working_selector, response_elements = wait_for_new_response(previous_counts, timeout)
+            except TimeoutException as e:
+                # Special handling for ChatGPT - sometimes it gets stuck but a refresh fixes it
+                if self.provider == 'chatgpt' and not refresh_attempted:
+                    print(f"⚠️ ChatGPT seems stuck, refreshing page...")
+                    refresh_attempted = True
+
+                    try:
+                        # Refresh the page
+                        self.driver.refresh()
+                        time.sleep(3)  # Give page time to reload
+
+                        # Check if response is now available (it often is after refresh)
+                        found_response = False
+                        for sel in response_selector_list:
+                            try:
+                                elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                                if elements and len(elements) > 0:
+                                    # Check if there's actual text content
+                                    if elements[-1].text and len(elements[-1].text) > 0:
+                                        working_selector = sel
+                                        response_elements = elements
+                                        found_response = True
+                                        print(f"✓ Response found after refresh")
+                                        break
+                            except Exception:
+                                continue
+
+                        if not found_response:
+                            raise e  # Re-raise the original timeout if still no response
+                    except Exception as refresh_error:
+                        if isinstance(refresh_error, TimeoutException):
+                            raise refresh_error
+                        print(f"⚠️ Refresh attempt failed: {refresh_error}")
+                        raise e  # Re-raise original timeout
+                else:
+                    raise  # Re-raise for non-ChatGPT providers or if refresh already attempted
+
             elapsed = time.time() - wait_start
             remaining_timeout = max(5, timeout - int(elapsed))
+
+            # If we still don't have a working selector, can't proceed
+            if not working_selector or not response_elements:
+                print(f"❌ No response found")
+                return None
 
             # Wait for the response to finish generating
             prev_length = 0
