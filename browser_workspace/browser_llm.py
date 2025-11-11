@@ -1,18 +1,22 @@
 """
 Browser LLM Interface - Advanced AI Chat Control
-Test Claude, ChatGPT, or DeepSeek with full model selection and options
+Test Claude, ChatGPT, DeepSeek, or Gemini with full model selection and options
 """
 
 import sys
 import os
 import re
+import time
 from typing import Dict, Optional
 
-# Add parent directory to path so we can import config
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
+# Add parent directory (repo root) to path so we can import our packages
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
-from browser_ai import BrowserAI, cleanup_all_browsers
+from crypto_ai_trader.browser_ai import BrowserAI, cleanup_all_browsers
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Colorama for cross-platform colored output
 try:
@@ -72,12 +76,24 @@ PROVIDER_MODELS = {
     'deepseek': {
         'name': 'DeepSeek',
         'models': {
-            '1': {'name': 'DeepSeek V3.2-Exp', 'desc': 'Latest experimental model', 'selector': 'v3.2'},
-            '2': {'name': 'DeepSeek R1', 'desc': 'Reasoning specialist', 'selector': 'r1'},
+            '1': {'name': 'DeepSeek', 'desc': 'Default model (Default)', 'selector': 'default'},
         },
         'features': {
-            'thinking_mode': True,
+            'deepthink': True,
+            'search': True,
             'max_context': '128K tokens',
+        }
+    },
+    'gemini': {
+        'name': 'Gemini',
+        'models': {
+            '1': {'name': '2.5 Pro', 'desc': 'Advanced reasoning & analysis (Default)', 'selector': '2.5 Pro'},
+            '2': {'name': '2.5 Flash', 'desc': 'Fast all-around help', 'selector': '2.5 Flash'},
+        },
+        'features': {
+            'max_context': '2M tokens',
+            'reasoning': True,
+            'code_execution': True,
         }
     }
 }
@@ -104,15 +120,28 @@ def select_provider() -> str:
 def select_model(provider: str) -> tuple[str, str]:
     """Let user select specific model for the provider"""
     config = PROVIDER_MODELS[provider]
+    total_models = len(config['models'])
+
     print(f"\n{Fore.YELLOW}{config['name']} Models:{Style.RESET_ALL}")
     print("-" * 80)
 
+    if total_models == 1:
+        key, model = next(iter(config['models'].items()))
+        print(f"\n{Fore.GREEN}Current Generation:{Style.RESET_ALL}\n")
+        print(f"  {Fore.WHITE}{model['name']:<20}{Style.RESET_ALL} {model['desc']}")
+        print(f"\n{Fore.CYAN}Only one model available. Using {model['name']}.{Style.RESET_ALL}")
+        return model['name'], model['selector']
+
     # Determine split point for current vs legacy models
-    # Claude: 3 current + 5 legacy, ChatGPT: 5 current + 4 legacy, DeepSeek: 2 current
+    # Claude: 3 current + 5 legacy, ChatGPT: 5 current + 4 legacy, DeepSeek: 1 (no legacy), Gemini: 2 (no legacy)
     if provider == 'chatgpt':
         current_gen_split = 5  # First 5 are GPT-5 models
     elif provider == 'claude':
         current_gen_split = 3  # First 3 are current generation
+    elif provider == 'deepseek':
+        current_gen_split = 1  # Only 1 model, no legacy
+    elif provider == 'gemini':
+        current_gen_split = 2  # Only 2 models available
     else:
         current_gen_split = 2  # Default for other providers
 
@@ -154,6 +183,30 @@ def get_claude_options() -> Dict:
     return options
 
 
+def get_deepseek_options() -> Dict:
+    """Get DeepSeek-specific options"""
+    options = {}
+
+    print(f"\n{Fore.YELLOW}DeepSeek Options:{Style.RESET_ALL}")
+    print("-" * 80)
+
+    # DeepThink toggle
+    print(f"\n{Fore.CYAN}DeepThink:{Style.RESET_ALL}")
+    print("  Enables deep reasoning mode for complex problems")
+
+    deepthink = input(f"\n  {Fore.WHITE}Enable DeepThink? (y/N, default=No): {Style.RESET_ALL}").strip().lower()
+    options['deepthink'] = deepthink == 'y'  # Default to disabled
+
+    # Search toggle
+    print(f"\n{Fore.CYAN}Web Search:{Style.RESET_ALL}")
+    print("  Enables web search for up-to-date information")
+
+    search = input(f"\n  {Fore.WHITE}Enable Search? (y/N, default=No): {Style.RESET_ALL}").strip().lower()
+    options['search'] = search == 'y'  # Default to disabled
+
+    return options
+
+
 def get_prompt_options(provider: str) -> tuple[str, Dict]:
     """Get prompt and provider-specific options"""
     print(f"\n{Fore.YELLOW}Prompt Configuration:{Style.RESET_ALL}")
@@ -161,12 +214,12 @@ def get_prompt_options(provider: str) -> tuple[str, Dict]:
 
     # Get the prompt
     print(f"\n{Fore.CYAN}Enter your prompt:{Style.RESET_ALL}")
-    print(f"  {Fore.WHITE}(Press Enter to use test prompt: 'What is 2 + 2?'){Style.RESET_ALL}")
-    prompt = input(f"\n{Fore.WHITE}> {Style.RESET_ALL}").strip()
-
-    if not prompt:
-        prompt = "What is 2 + 2? Answer with just the number."
-        print(f"  {Fore.YELLOW}Using test prompt{Style.RESET_ALL}")
+    print(f"  {Fore.WHITE}(Prompt is required; press Enter without text to re-enter){Style.RESET_ALL}")
+    prompt = ""
+    while not prompt:
+        prompt = input(f"\n{Fore.WHITE}> {Style.RESET_ALL}").strip()
+        if not prompt:
+            print(f"  {Fore.YELLOW}Please enter a prompt (empty input sends nothing).{Style.RESET_ALL}")
 
     # Get provider-specific options
     options = {}
@@ -176,8 +229,10 @@ def get_prompt_options(provider: str) -> tuple[str, Dict]:
         print(f"\n{Fore.YELLOW}ChatGPT Options:{Style.RESET_ALL}")
         print("  Using default GPT settings")
     elif provider == 'deepseek':
-        print(f"\n{Fore.YELLOW}DeepSeek Options:{Style.RESET_ALL}")
-        print("  Using default DeepSeek settings")
+        options = get_deepseek_options()
+    elif provider == 'gemini':
+        print(f"\n{Fore.YELLOW}Gemini Options:{Style.RESET_ALL}")
+        print("  Using default Gemini settings")
 
     return prompt, options
 
@@ -251,6 +306,44 @@ def inject_claude_model_selection(browser_ai, model_selector: str):
                     return True
                 except Exception:
                     continue
+
+            try:
+                rect = driver.execute_script(
+                    """
+                    const rect = arguments[0].getBoundingClientRect();
+                    if (!rect || (!rect.width && !rect.height)) {
+                        return null;
+                    }
+                    return {
+                        x: rect.left + rect.width - Math.min(12, Math.max(4, rect.width * 0.2)),
+                        y: rect.top + rect.height / 2
+                    };
+                    """,
+                    element,
+                )
+            except Exception:
+                rect = None
+
+            if rect and rect.get("x") is not None and rect.get("y") is not None:
+                try:
+                    clicked = driver.execute_script(
+                        """
+                        const target = document.elementFromPoint(arguments[0], arguments[1]);
+                        if (!target) {
+                            return false;
+                        }
+                        target.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+                        target.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}));
+                        target.click();
+                        return true;
+                        """,
+                        rect["x"],
+                        rect["y"],
+                    )
+                    if clicked:
+                        return True
+                except Exception:
+                    pass
             return False
 
         def collect_menu_items() -> list:
@@ -396,7 +489,7 @@ def inject_claude_model_selection(browser_ai, model_selector: str):
                     continue
             return False
 
-        def click_matching_option():
+        def click_matching_option(anchor=None):
             items = collect_menu_items()
             texts_seen = []
             for elem in items:
@@ -596,6 +689,43 @@ def inject_chatgpt_model_selection(browser_ai, model_selector: str):
                     return True
                 except Exception:
                     continue
+            try:
+                rect = driver.execute_script(
+                    """
+                    const rect = arguments[0].getBoundingClientRect();
+                    if (!rect || (!rect.width && !rect.height)) {
+                        return null;
+                    }
+                    return {
+                        x: rect.left + rect.width - Math.min(12, Math.max(4, rect.width * 0.2)),
+                        y: rect.top + rect.height / 2
+                    };
+                    """,
+                    element,
+                )
+            except Exception:
+                rect = None
+
+            if rect and rect.get("x") is not None and rect.get("y") is not None:
+                try:
+                    clicked = driver.execute_script(
+                        """
+                        const target = document.elementFromPoint(arguments[0], arguments[1]);
+                        if (!target) {
+                            return false;
+                        }
+                        target.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+                        target.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}));
+                        target.click();
+                        return true;
+                        """,
+                        rect["x"],
+                        rect["y"],
+                    )
+                    if clicked:
+                        return True
+                except Exception:
+                    pass
             return False
 
         def collect_menu_items() -> list:
@@ -746,7 +876,7 @@ def inject_chatgpt_model_selection(browser_ai, model_selector: str):
                     continue
             return False
 
-        def click_matching_option():
+        def click_matching_option(anchor=None):
             items = collect_menu_items()
             texts_seen = []
             for elem in items:
@@ -832,12 +962,27 @@ def inject_chatgpt_model_selection(browser_ai, model_selector: str):
             close_menu()
             return
 
+        dropdown_anchor = None
+        try:
+            dropdown_anchor = driver.execute_script(
+                """
+                const rect = arguments[0].getBoundingClientRect();
+                return {
+                    x: rect.x + rect.width / 2,
+                    y: rect.y + rect.height / 2
+                };
+                """,
+                dropdown_button,
+            )
+        except Exception:
+            dropdown_anchor = None
+
         print(f"   {Fore.CYAN}[INFO] Looking for '{model_selector}'...{Style.RESET_ALL}")
-        success, clicked_text, seen_items = click_matching_option()
+        success, clicked_text, seen_items = click_matching_option(dropdown_anchor)
 
         if not success:
             if expand_legacy_models():
-                success, clicked_text, seen_items = click_matching_option()
+                success, clicked_text, seen_items = click_matching_option(dropdown_anchor)
 
         if not success:
             print(f"   {Fore.YELLOW}[WARNING] Could not find '{model_selector}' in dropdown{Style.RESET_ALL}")
@@ -907,6 +1052,519 @@ def inject_claude_options(browser_ai, options: Dict):
         print(f"   {Fore.CYAN}[INFO] Could not set advanced options: {e}{Style.RESET_ALL}")
 
 
+def enable_claude_temporary_chat(browser_ai):
+    """Ensure Claude temporary chat (ghost mode) is enabled"""
+    try:
+        driver = getattr(browser_ai, "driver", None)
+        if not driver:
+            return
+
+        script = """
+        const keywords = ['temporary chat', 'ghost', 'private chat', 'history off', 'incognito'];
+        const elements = Array.from(document.querySelectorAll('button, div[role="button"], a[role="button"], span[role="button"]'));
+        for (const el of elements) {
+            if (!el || el.offsetParent === null) continue;
+            const label = [
+                el.getAttribute('aria-label') || '',
+                el.innerText || '',
+                el.getAttribute('title') || ''
+            ].join(' ').trim().toLowerCase();
+            if (!label) continue;
+            if (keywords.some(k => label.includes(k))) {
+                const ariaPressed = (el.getAttribute('aria-pressed') || '').toLowerCase();
+                const ariaChecked = (el.getAttribute('aria-checked') || '').toLowerCase();
+                const dataState = (el.getAttribute('data-state') || '').toLowerCase();
+                const isActive = ariaPressed === 'true' || ariaChecked === 'true' || dataState === 'on' || el.classList.contains('bg-white/10');
+                if (!isActive) {
+                    el.click();
+                    return {status: 'clicked', label};
+                }
+                return {status: 'already_on', label};
+            }
+        }
+        return {status: 'not_found'};
+        """
+
+        result = driver.execute_script(script)
+        if isinstance(result, dict):
+            status = result.get('status')
+            label = result.get('label', 'temporary chat')
+            if status == 'clicked':
+                print(f"   {Fore.GREEN}[OK] Enabled Claude temporary chat ({label}){Style.RESET_ALL}")
+            elif status == 'already_on':
+                print(f"   {Fore.CYAN}[INFO] Claude temporary chat already enabled{Style.RESET_ALL}")
+            else:
+                print(f"   {Fore.CYAN}[INFO] Could not find Claude temporary chat toggle{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"   {Fore.CYAN}[INFO] Could not enable Claude temporary chat: {e}{Style.RESET_ALL}")
+
+
+def inject_deepseek_options(browser_ai, options: Dict):
+    """
+    Inject DeepSeek-specific options (DeepThink and Search toggles)
+    """
+    try:
+        deepthink_enabled = options.get('deepthink', True)
+        search_enabled = options.get('search', False)
+
+        # Toggle DeepThink
+        deepthink_result = browser_ai.driver.execute_script(f"""
+            var buttons = document.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {{
+                var btn = buttons[i];
+                var text = btn.textContent || btn.getAttribute('aria-label') || '';
+                if (text.toLowerCase().includes('deepthink')) {{
+                    // Check if it's currently active
+                    var isActive = btn.getAttribute('aria-pressed') === 'true' ||
+                                 btn.classList.contains('active') ||
+                                 btn.getAttribute('data-state') === 'on' ||
+                                 btn.classList.contains('selected');
+
+                    // Click if we need to toggle the state
+                    var shouldBeActive = {str(deepthink_enabled).lower()};
+                    if (isActive !== shouldBeActive) {{
+                        btn.click();
+                        return shouldBeActive ? 'enabled' : 'disabled';
+                    }}
+                    return shouldBeActive ? 'already_enabled' : 'already_disabled';
+                }}
+            }}
+            return 'not_found';
+        """)
+
+        if deepthink_result == 'enabled':
+            print(f"   {Fore.GREEN}[OK] DeepThink enabled{Style.RESET_ALL}")
+        elif deepthink_result == 'disabled':
+            print(f"   {Fore.GREEN}[OK] DeepThink disabled{Style.RESET_ALL}")
+        elif deepthink_result == 'already_enabled':
+            print(f"   {Fore.CYAN}[INFO] DeepThink already enabled{Style.RESET_ALL}")
+        elif deepthink_result == 'already_disabled':
+            print(f"   {Fore.CYAN}[INFO] DeepThink already disabled{Style.RESET_ALL}")
+
+        # Toggle Search
+        search_result = browser_ai.driver.execute_script(f"""
+            var buttons = document.querySelectorAll('button');
+            for (var i = 0; i < buttons.length; i++) {{
+                var btn = buttons[i];
+                var text = btn.textContent || btn.getAttribute('aria-label') || '';
+                if (text.toLowerCase().includes('search')) {{
+                    // Check if it's currently active
+                    var isActive = btn.getAttribute('aria-pressed') === 'true' ||
+                                 btn.classList.contains('active') ||
+                                 btn.getAttribute('data-state') === 'on' ||
+                                 btn.classList.contains('selected');
+
+                    // Click if we need to toggle the state
+                    var shouldBeActive = {str(search_enabled).lower()};
+                    if (isActive !== shouldBeActive) {{
+                        btn.click();
+                        return shouldBeActive ? 'enabled' : 'disabled';
+                    }}
+                    return shouldBeActive ? 'already_enabled' : 'already_disabled';
+                }}
+            }}
+            return 'not_found';
+        """)
+
+        if search_result == 'enabled':
+            print(f"   {Fore.GREEN}[OK] Search enabled{Style.RESET_ALL}")
+        elif search_result == 'disabled':
+            print(f"   {Fore.GREEN}[OK] Search disabled{Style.RESET_ALL}")
+        elif search_result == 'already_enabled':
+            print(f"   {Fore.CYAN}[INFO] Search already enabled{Style.RESET_ALL}")
+        elif search_result == 'already_disabled':
+            print(f"   {Fore.CYAN}[INFO] Search already disabled{Style.RESET_ALL}")
+
+    except Exception as e:
+        print(f"   {Fore.CYAN}[INFO] Could not set DeepSeek options: {e}{Style.RESET_ALL}")
+
+
+def inject_gemini_model_selection(browser_ai, model_selector: str):
+    """
+    Select a specific Gemini model by ALWAYS clicking the dropdown and selecting the option
+    """
+    try:
+        import time
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.common.keys import Keys
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        driver = getattr(browser_ai, "driver", None)
+        if not driver:
+            print(f"   {Fore.YELLOW}[WARNING] Browser not initialized; cannot select model{Style.RESET_ALL}")
+            return
+
+        if not model_selector:
+            print(f"   {Fore.YELLOW}[WARNING] Empty model selector supplied{Style.RESET_ALL}")
+            return
+
+        print(f"   {Fore.YELLOW}[INFO] Force-selecting model: {model_selector}{Style.RESET_ALL}")
+
+        wait = WebDriverWait(driver, 10)
+
+        def find_dropdown_button():
+            for attempt in range(4):
+                try:
+                    js_button = driver.execute_script(
+                        """
+                        const threshold = window.innerHeight * 0.45;
+                        const candidates = Array.from(
+                            document.querySelectorAll('button,div[role="button"],div[role="combobox"]')
+                        );
+                        for (const btn of candidates) {
+                            if (!btn || !btn.offsetParent) continue;
+                            const rect = btn.getBoundingClientRect();
+                            if (!rect || rect.width < 60 || rect.height < 26) continue;
+                            if (rect.top < threshold) continue;
+                            const text = (btn.innerText || btn.textContent || '')
+                                .replace(/\\s+/g, ' ')
+                                .trim()
+                                .toLowerCase();
+                            if (!text) continue;
+                            if (
+                                text.includes('choose your model') ||
+                                (text.includes('2.5') && (text.includes('pro') || text.includes('flash')))
+                            ) {
+                                return btn;
+                            }
+                        }
+                        return null;
+                        """
+                    )
+                    if js_button:
+                        print(f"   {Fore.GREEN}[OK] Found model dropdown button{Style.RESET_ALL}")
+                        return js_button
+                except Exception:
+                    pass
+                time.sleep(0.4)
+            return None
+
+        # Simplified dropdown interaction - ALWAYS click and select
+        dropdown_button = find_dropdown_button()
+        if not dropdown_button:
+            print(f"   {Fore.YELLOW}[WARNING] Could not find model dropdown{Style.RESET_ALL}")
+            return
+
+        print(f"   {Fore.CYAN}[INFO] Opening dropdown to select '{model_selector}'...{Style.RESET_ALL}")
+
+        # Click the dropdown button (or its caret) to open it
+        try:
+            # Try to click the caret/arrow icon first if it exists
+            clicked = driver.execute_script("""
+                const btn = arguments[0];
+                if (!btn) return false;
+
+                // Look for a caret/arrow element within the button
+                const caret = btn.querySelector('svg, [aria-hidden="true"], .caret, .arrow, span:last-child');
+                if (caret) {
+                    caret.click();
+                    return 'caret';
+                }
+
+                // Otherwise click the button itself
+                btn.click();
+                return 'button';
+            """, dropdown_button)
+
+            time.sleep(1.0)  # Give menu time to open fully
+            print(f"   {Fore.GREEN}[OK] Dropdown opened (clicked {clicked}){Style.RESET_ALL}")
+        except Exception as e:
+            print(f"   {Fore.YELLOW}[WARNING] Failed to open dropdown: {e}{Style.RESET_ALL}")
+            return
+
+        # Find and click the target model option using JavaScript for reliability
+        try:
+            time.sleep(0.5)  # Let dropdown fully render
+
+            # Use JavaScript to find and click the option directly
+            success = driver.execute_script(r"""
+                const modelSelector = arguments[0];
+                const targetTokens = modelSelector.toLowerCase().split(/[^a-z0-9\.]+/).filter(Boolean);
+
+                // Function to check if text matches our target - but not if it contains OTHER model names too
+                function matchesTarget(text) {
+                    const normalized = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+                    // Must contain all our target tokens
+                    const hasAllTokens = targetTokens.every(token => normalized.includes(token));
+                    if (!hasAllTokens) return false;
+
+                    // But should NOT contain both "flash" and "pro" (that would be the container)
+                    if (normalized.includes('flash') && normalized.includes('pro') &&
+                        normalized.includes('reasoning') && normalized.includes('fast')) {
+                        return false; // This is likely the container with both options
+                    }
+
+                    // Check if this looks like a single option (not too long)
+                    if (normalized.length > 100) {
+                        return false; // Too long, probably a container
+                    }
+
+                    return true;
+                }
+
+                // Find all potential option elements - be more specific
+                const selectors = [
+                    '[role="option"]',
+                    '[role="menuitem"]',
+                    'div[data-value]',
+                    'li[data-value]',
+                    'button[data-value]'
+                ];
+
+                let allOptions = [];
+                for (const selector of selectors) {
+                    const elements = Array.from(document.querySelectorAll(selector));
+                    allOptions.push(...elements);
+                }
+
+                // Also look for divs/spans that are children of role="listbox" or role="menu"
+                const menuContainers = document.querySelectorAll('[role="listbox"], [role="menu"]');
+                menuContainers.forEach(container => {
+                    const children = container.querySelectorAll('div, span, li, button');
+                    children.forEach(child => {
+                        if (!allOptions.includes(child) && child.offsetParent) {
+                            const text = (child.textContent || '').trim();
+                            // Only add if it looks like an individual option
+                            if (text && text.length < 100 && !text.includes('Choose your model')) {
+                                allOptions.push(child);
+                            }
+                        }
+                    });
+                });
+
+                // Sort options by text length (prefer shorter, more specific matches)
+                allOptions.sort((a, b) => {
+                    const aText = (a.textContent || '').trim();
+                    const bText = (b.textContent || '').trim();
+                    return aText.length - bText.length;
+                });
+
+                // Try to find and click the matching option
+                for (const option of allOptions) {
+                    if (!option.offsetParent) continue;  // Skip hidden
+                    const text = (option.textContent || option.innerText || '').trim();
+                    if (!text) continue;
+
+                    if (matchesTarget(text)) {
+                        console.log('Found match:', text);
+
+                        // Scroll into view
+                        option.scrollIntoView({block: 'center', inline: 'center'});
+
+                        // Try multiple click methods
+                        try {
+                            option.click();
+                            return {success: true, text: text};
+                        } catch(e1) {
+                            try {
+                                option.dispatchEvent(new MouseEvent('click', {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window
+                                }));
+                                return {success: true, text: text};
+                            } catch(e2) {
+                                try {
+                                    // Simulate pointer events
+                                    option.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true}));
+                                    option.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}));
+                                    option.click();
+                                    return {success: true, text: text};
+                                } catch(e3) {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // If no match found, try a more direct approach - look for the Flash option specifically
+                const allElements = Array.from(document.querySelectorAll('*'));
+                for (const elem of allElements) {
+                    if (!elem.offsetParent) continue;
+                    const text = (elem.textContent || '').trim();
+
+                    // Look for an element that contains "2.5 Flash" but NOT "2.5 Pro"
+                    if (text.includes('2.5 Flash') && !text.includes('2.5 Pro') &&
+                        text.length < 50) {  // Should be a short label
+
+                        console.log('Found Flash option directly:', text);
+                        elem.scrollIntoView({block: 'center', inline: 'center'});
+
+                        try {
+                            elem.click();
+                            return {success: true, text: text};
+                        } catch(e) {
+                            elem.dispatchEvent(new MouseEvent('click', {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window
+                            }));
+                            return {success: true, text: text};
+                        }
+                    }
+                }
+
+                // Return list of visible options if we couldn't find a match
+                const visibleTexts = [];
+                for (const option of allOptions) {
+                    if (option.offsetParent) {
+                        const text = (option.textContent || option.innerText || '').trim();
+                        if (text && !visibleTexts.includes(text)) {
+                            visibleTexts.push(text);
+                        }
+                    }
+                }
+                return {success: false, visibleOptions: visibleTexts};
+            """, model_selector)
+
+            if success and success.get('success'):
+                time.sleep(0.5)
+                print(f"   {Fore.GREEN}[OK] Selected model: {success.get('text', model_selector)}{Style.RESET_ALL}")
+            else:
+                print(f"   {Fore.YELLOW}[WARNING] Could not find '{model_selector}' in dropdown{Style.RESET_ALL}")
+                if success and success.get('visibleOptions'):
+                    visible_opts = success['visibleOptions']
+                    print(f"   {Fore.CYAN}[DEBUG] Visible options: {', '.join(visible_opts[:6])}{Style.RESET_ALL}")
+
+                # Try to close dropdown
+                try:
+                    driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            print(f"   {Fore.YELLOW}[WARNING] Error selecting model: {e}{Style.RESET_ALL}")
+            try:
+                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            except Exception:
+                pass
+
+    except Exception as e:
+        print(f"   {Fore.YELLOW}[WARNING] Model selection error: {e}{Style.RESET_ALL}")
+
+
+def ensure_gemini_new_chat(browser_ai):
+    """Ensure Gemini starts a fresh conversation before sending prompts."""
+    driver = getattr(browser_ai, "driver", None)
+    if not driver:
+        return
+
+    import time
+
+    # Try built-in helper first (uses configured selectors)
+    try:
+        browser_ai.try_new_chat()
+    except Exception:
+        pass
+
+    # Fallback: search for any button-like element whose text hints at "New chat" or "Ask Gemini"
+    try:
+        clicked = driver.execute_script(
+            """
+            const keywords = (arguments[0] || []).map(k => (k || '').toLowerCase()).filter(Boolean);
+            if (!keywords.length) {
+                return '';
+            }
+            const normalize = text => (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+            const nodes = Array.from(
+                document.querySelectorAll('button,a,div[role="button"],span[role="button"],md-filled-button,md-outlined-button,md-icon-button')
+            );
+            for (const node of nodes) {
+                if (!node || node.offsetParent === null) continue;
+                const combined = [
+                    normalize(node.innerText),
+                    normalize(node.textContent),
+                    normalize(node.getAttribute('aria-label')),
+                    normalize(node.getAttribute('title'))
+                ].filter(Boolean).join(' ');
+                if (!combined) continue;
+                if (keywords.some(keyword => combined.includes(keyword))) {
+                    node.click();
+                    return combined;
+                }
+            }
+            return '';
+            """,
+            [
+                "new chat",
+                "new conversation",
+                "start chat",
+                "start a chat",
+                "ask gemini",
+                "start over",
+                "new prompt",
+            ],
+        )
+        if clicked:
+            time.sleep(0.6)
+            print(f"   {Fore.CYAN}[INFO] Started new Gemini chat{Style.RESET_ALL}")
+    except Exception:
+        pass
+
+
+def provider_requires_login(browser_ai, provider: str) -> bool:
+    """Check whether the provider page is still prompting for login."""
+    try:
+        if browser_ai.needs_login():
+            return True
+    except Exception:
+        return True
+
+    driver = getattr(browser_ai, "driver", None)
+    if not driver:
+        return True
+
+    try:
+        current_url = (driver.current_url or "").lower()
+    except Exception:
+        current_url = ""
+
+    if "accounts.google" in current_url:
+        return True
+
+    try:
+        script = """
+        const keywords = (arguments[0] || []).map(k => (k || '').toLowerCase());
+        if (!keywords.length) {
+            return false;
+        }
+        const elements = Array.from(
+            document.querySelectorAll('a,button,div[role="button"],span[role="button"],md-outlined-button,md-filled-button')
+        );
+        for (const el of elements) {
+            if (!el || el.offsetParent === null) continue;
+            const label = [
+                el.innerText || '',
+                el.textContent || '',
+                el.getAttribute('aria-label') || '',
+                el.getAttribute('title') || ''
+            ].join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+            if (!label) continue;
+            if (keywords.some(keyword => label.includes(keyword))) {
+                return true;
+            }
+        }
+        return false;
+        """
+        keywords = [
+            "sign in",
+            "sign-in",
+            "log in",
+            "login",
+            "sign into",
+            "use another account",
+            "try gemini",
+        ]
+        if driver.execute_script(script, keywords):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def main():
     """Main function to run the browser LLM interface"""
 
@@ -933,14 +1591,10 @@ def main():
     try:
         print(f"\n{Fore.YELLOW}[INFO] Starting browser...{Style.RESET_ALL}")
 
-        # Create browser AI instance
-        browser_ai = BrowserAI(provider=provider)
+        browser_ai = BrowserAI(provider=provider, session_dir=SCRIPT_DIR)
 
-        # Manually initialize with visible browser
         import undetected_chromedriver as uc
-        import time
 
-        # Setup Chrome options - NOT headless so you can watch!
         chrome_options = uc.ChromeOptions()
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
@@ -949,83 +1603,101 @@ def main():
         print(f"{Fore.YELLOW}[INFO] Opening browser window...{Style.RESET_ALL}")
         browser_ai.driver = uc.Chrome(options=chrome_options)
 
-        # Go to the AI service
+        driver = browser_ai.driver
         url = browser_ai.urls.get(provider)
+        if not url:
+            print(f"{Fore.RED}[ERROR] No URL defined for provider: {provider}{Style.RESET_ALL}")
+            return
+
         print(f"{Fore.YELLOW}[INFO] Navigating to {url}...{Style.RESET_ALL}")
-        browser_ai.driver.get(url)
+        driver.get(url)
         time.sleep(3)
 
-        # Try to load cookies
-        if browser_ai.load_cookies():
-            print(f"{Fore.GREEN}[OK] Loaded saved session{Style.RESET_ALL}")
-            browser_ai.driver.refresh()
+        loaded_cookies = browser_ai.load_cookies()
+        loaded_storage = browser_ai.load_storage() if hasattr(browser_ai, 'load_storage') else False
+
+        if loaded_cookies or loaded_storage:
+            if loaded_cookies:
+                print(f"{Fore.GREEN}[OK] Loaded saved cookies{Style.RESET_ALL}")
+            if loaded_storage:
+                print(f"{Fore.GREEN}[OK] Restored local storage{Style.RESET_ALL}")
+            driver.get(url)
             time.sleep(3)
 
-        # Check if login needed
-        if browser_ai.needs_login():
-            print("\n" + "-" * 60)
-            print(f"{Fore.YELLOW}[WARNING] LOGIN REQUIRED{Style.RESET_ALL}")
-            print("-" * 60)
-            print("Please login in the browser window.")
-            print("After logging in, come back here and press Enter.")
+        login_attempts = 0
+        max_login_attempts = 3
+
+        def perform_login_flow(clear_cookies: bool = False):
+            nonlocal loaded_cookies
+            if clear_cookies:
+                try:
+                    driver.delete_all_cookies()
+                    print(f"{Fore.CYAN}[INFO] Cleared expired cookies; please login again{Style.RESET_ALL}")
+                except Exception:
+                    pass
+                loaded_cookies = False
+
+            print("Please complete the login flow in the browser window.")
+            if url:
+                try:
+                    driver.get(url)
+                    time.sleep(2)
+                except Exception:
+                    pass
+
             input(f"\n{Fore.WHITE}Press Enter after login: {Style.RESET_ALL}")
 
-            # Save cookies
-            browser_ai.save_cookies()
-            print(f"{Fore.GREEN}[OK] Session saved{Style.RESET_ALL}")
+            try:
+                browser_ai.save_cookies()
+                if hasattr(browser_ai, 'save_storage'):
+                    browser_ai.save_storage()
+                print(f"{Fore.GREEN}[OK] Session saved{Style.RESET_ALL}")
+            except Exception as save_error:
+                print(f"{Fore.YELLOW}[WARNING] Could not save session data: {save_error}{Style.RESET_ALL}")
+
+            if url:
+                driver.get(url)
+                time.sleep(3)
+                print(f"{Fore.GREEN}[OK] Reloaded chat interface{Style.RESET_ALL}")
+
+        while login_attempts < max_login_attempts:
+            if provider_requires_login(browser_ai, provider):
+                login_attempts += 1
+                print("\n" + "-" * 60)
+                print(f"{Fore.YELLOW}[WARNING] LOGIN REQUIRED{Style.RESET_ALL}")
+                print("-" * 60)
+                perform_login_flow(clear_cookies=loaded_cookies and login_attempts == 1)
+            else:
+                break
+
+        if provider_requires_login(browser_ai, provider):
+            print(f"{Fore.YELLOW}[WARNING] Could not verify login automatically; continuing.{Style.RESET_ALL}")
 
         browser_ai.is_initialized = True
 
-        # For Claude, always select the specific model (browser remembers last choice)
+        # Select requested model for each provider
         if provider == 'claude':
             inject_claude_model_selection(browser_ai, model_selector)
-
-        # For ChatGPT, always select the specific model (browser remembers last choice)
-        if provider == 'chatgpt':
+        elif provider == 'chatgpt':
             inject_chatgpt_model_selection(browser_ai, model_selector)
+        elif provider == 'gemini':
+            ensure_gemini_new_chat(browser_ai)
+            inject_gemini_model_selection(browser_ai, model_selector)
+        elif provider == 'deepseek':
+            pass  # DeepSeek has only one model today
 
-        # Apply provider-specific options
-        if provider == 'claude' and options:
-            inject_claude_options(browser_ai, options)
+        # Provider-specific option toggles
+        if provider == 'claude':
+            if options:
+                inject_claude_options(browser_ai, options)
+            enable_claude_temporary_chat(browser_ai)
+        elif provider == 'deepseek' and options:
+            inject_deepseek_options(browser_ai, options)
 
         print(f"\n{Fore.YELLOW}[INFO] Sending prompt...{Style.RESET_ALL}")
         print(f"{Fore.WHITE}   (Watch the browser window!){Style.RESET_ALL}\n")
 
-        # Send the prompt
         response = browser_ai.send_prompt(prompt, timeout=45)
-
-        # If no response, try refreshing (often the answer appears after refresh)
-        if not response:
-            print(f"{Fore.YELLOW}[WARNING] No response received, refreshing page...{Style.RESET_ALL}")
-            browser_ai.driver.refresh()
-            import time
-            from selenium.webdriver.common.by import By
-            time.sleep(5)  # Wait for page to fully load
-
-            # Try to grab the response that's already on the page after refresh
-            try:
-                selectors = browser_ai.selectors.get(provider, {})
-                response_selector = selectors.get('response', '')
-                response_selector_list = [sel.strip() for sel in response_selector.split(',') if sel.strip()]
-
-                for sel in response_selector_list:
-                    try:
-                        response_elements = browser_ai.driver.find_elements(By.CSS_SELECTOR, sel)
-                        if response_elements and len(response_elements) > 0:
-                            response = response_elements[-1].text
-                            if response:
-                                # Clean up UI elements
-                                for element in ['Retry', 'Copy', 'Copy code', 'Regenerate', 'Continue']:
-                                    response = response.replace(element, '').strip()
-                                while '\n\n\n' in response:
-                                    response = response.replace('\n\n\n', '\n\n')
-                                response = response.strip()
-                                print(f"{Fore.GREEN}[OK] Grabbed response after refresh{Style.RESET_ALL}")
-                                break
-                    except Exception:
-                        continue
-            except Exception as e:
-                print(f"{Fore.YELLOW}[WARNING] Could not grab response after refresh: {e}{Style.RESET_ALL}")
 
         print(f"\n{Fore.CYAN}{Style.BRIGHT}RESPONSE:{Style.RESET_ALL}")
 

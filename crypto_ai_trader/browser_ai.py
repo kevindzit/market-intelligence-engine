@@ -1,10 +1,12 @@
 """
 Browser AI System for Free AI Model Access
-Uses Selenium to interact with AI chat interfaces (Claude, ChatGPT, DeepSeek)
+Uses Selenium to interact with AI chat interfaces (Claude, ChatGPT, DeepSeek, Gemini)
 """
 
 import time
 import os
+import json
+import re
 from typing import Dict, Optional
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -21,26 +23,200 @@ except ImportError:
     import config
 
 
+GEMINI_INPUT_KEYWORDS = [
+    'gemini',
+    'ask',
+    'prompt',
+    'message',
+    'search',
+    'question',
+    'write',
+    'type',
+]
+
+GEMINI_WAKE_SELECTORS = [
+    '[data-ask-gemini-input]',
+    'textarea[aria-label*="Gemini"]',
+    'div[aria-label*="Gemini"]',
+    'button[aria-label*="Ask"]',
+    'div[role="textbox"]',
+    '[data-testid*="input"]',
+]
+
+GEMINI_INPUT_LOCATOR_SCRIPT = """
+const selectors = Array.isArray(arguments[0]) ? arguments[0].filter(Boolean) : [];
+const keywords = Array.isArray(arguments[1]) ? arguments[1].map(k => (k || '').toLowerCase()) : [];
+const returnElement = Boolean(arguments[2]);
+
+const fallbackSelectors = [
+  'textarea[aria-label]',
+  'textarea[placeholder]',
+  'textarea:not([disabled])',
+  'div[role="textbox"]',
+  '[contenteditable="true"][role="textbox"]',
+  '[contenteditable="true"]'
+];
+
+const seen = new Set();
+function addMatches(selector) {
+  if (!selector) return;
+  try {
+    document.querySelectorAll(selector).forEach(node => {
+      if (!seen.has(node)) {
+        seen.add(node);
+      }
+    });
+  } catch (err) {}
+}
+
+if (selectors.length) {
+  selectors.forEach(addMatches);
+} else {
+  fallbackSelectors.forEach(addMatches);
+}
+
+if (!seen.size) {
+  fallbackSelectors.forEach(addMatches);
+}
+
+const candidates = Array.from(seen);
+
+function isTextInput(el) {
+  if (!el) return false;
+  if (el.tagName === 'TEXTAREA') return true;
+  if (el.isContentEditable) return true;
+  const role = (el.getAttribute('role') || '').toLowerCase();
+  return role === 'textbox' || role === 'combobox';
+}
+
+function isVisible(el) {
+  if (!el || !el.isConnected) return false;
+  const rect = el.getBoundingClientRect();
+  if (!rect || rect.width < 4 || rect.height < 4) return false;
+  const style = window.getComputedStyle(el);
+  if (!style) return false;
+  if (style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity || 1) === 0) {
+    return false;
+  }
+  return true;
+}
+
+function labelFor(el) {
+  const parts = [
+    el.getAttribute('aria-label'),
+    el.getAttribute('placeholder'),
+    el.getAttribute('aria-placeholder'),
+    el.getAttribute('data-placeholder'),
+    el.textContent
+  ].filter(Boolean);
+  return parts.join(' ').trim().toLowerCase();
+}
+
+let fallback = null;
+for (const node of candidates) {
+  if (!isTextInput(node) || !isVisible(node)) {
+    continue;
+  }
+
+  if (!fallback) {
+    fallback = node;
+  }
+
+  const label = labelFor(node);
+  if (!keywords.length || (label && keywords.some(k => label.includes(k)))) {
+    if (returnElement) {
+      try { node.scrollIntoView({block: 'center', inline: 'center'}); } catch (err) {}
+      try { node.focus(); } catch (err) {}
+      return node;
+    }
+    return true;
+  }
+}
+
+if (returnElement && fallback) {
+  try { fallback.scrollIntoView({block: 'center', inline: 'center'}); } catch (err) {}
+  try { fallback.focus(); } catch (err) {}
+  return fallback;
+}
+
+return false;
+"""
+
+DEEPSEEK_THINKING_MARKERS = (
+    'thought for',
+    'thinking for',
+    'internal monologue',
+    'deepseek is thinking',
+    'scratchpad',
+    'analysis:',
+    'deliberation',
+    'reasoning trail',
+    'reasoning:',
+    'hmm',
+    'let me think',
+    'notes:',
+    'reflection',
+    'plan:',
+)
+
+
+def strip_deepseek_thinking(text: str) -> str:
+    """Remove DeepSeek's exposed thinking paragraphs, keep only the final answer."""
+    if not text:
+        return text
+
+    cleaned = text.strip()
+    if not cleaned:
+        return cleaned
+
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if not lines:
+        return cleaned
+
+    # Prefer an explicit numeric/textual answer if it exists on the final lines
+    for line in reversed(lines[-4:]):
+        if re.fullmatch(r"[+-]?(\d+(\.\d+)?|\w+)", line) and len(line) <= 32:
+            if line.isdigit() or line.replace('.', '', 1).isdigit() or len(line) <= 6:
+                return line
+
+    filtered_lines = []
+    for line in lines:
+        lowered = line.lower()
+        if any(marker in lowered for marker in DEEPSEEK_THINKING_MARKERS):
+            continue
+        filtered_lines.append(line)
+
+    if filtered_lines:
+        return "\n".join(filtered_lines).strip()
+
+    return lines[-1]
+
+
 class BrowserAI:
     """Browser interface for AI chat services"""
 
-    def __init__(self, provider: str = 'claude'):
+    def __init__(self, provider: str = 'claude', session_dir: Optional[str] = None):
         """
         Initialize browser AI for a specific provider
 
         Args:
-            provider: 'claude', 'chatgpt', or 'deepseek'
+            provider: 'claude', 'chatgpt', 'deepseek', or 'gemini'
+            session_dir: directory for storing cookies/storage files
         """
         self.provider = provider
         self.driver = None
         self.is_initialized = False
-        self.cookies_file = f"cookies_{provider}.pkl"
+        self.session_dir = os.path.abspath(session_dir) if session_dir else os.getcwd()
+        os.makedirs(self.session_dir, exist_ok=True)
+        self.cookies_file = os.path.join(self.session_dir, f"cookies_{provider}.pkl")
+        self.storage_file = os.path.join(self.session_dir, f"storage_{provider}.json")
 
         # URLs for each provider
         self.urls = {
             'claude': 'https://claude.ai/new',
             'chatgpt': 'https://chat.openai.com',
-            'deepseek': 'https://chat.deepseek.com'
+            'deepseek': 'https://chat.deepseek.com',
+            'gemini': 'https://gemini.google.com/app'
         }
 
         # Only some providers require clicking "New Chat" before sending
@@ -57,7 +233,7 @@ class BrowserAI:
             'chatgpt': {
                 'input': 'textarea[placeholder*="Ask"], textarea[placeholder*="Message"], textarea[id="prompt-textarea"], div[contenteditable="true"]',
                 'send': 'button[data-testid*="send"], button[aria-label*="Send"], button[type="button"]',
-                'response': 'div[data-message-author-role="assistant"], div.markdown, article',
+                'response': 'div.markdown, article, div[data-message-author-role="assistant"]',
                 'new_chat': 'button[aria-label*="New chat"], a[href="/"]'
             },
             'deepseek': {
@@ -65,6 +241,23 @@ class BrowserAI:
                 'send': 'button[type="submit"], button[aria-label*="Send"]',
                 'response': 'div.markdown, div[class*="message"], div[class*="response"], article',
                 'new_chat': 'button[aria-label*="New"], a[href*="chat"]'
+            },
+            'gemini': {
+                'input': (
+                    'textarea[aria-label*="Ask Gemini"],'
+                    'textarea[placeholder*="Ask Gemini"],'
+                    'textarea[placeholder*="Ask"],'
+                    'div[aria-label*="Ask Gemini"][contenteditable="true"],'
+                    'div[aria-label*="Ask"][contenteditable="true"],'
+                    '[contenteditable="true"][data-ask-gemini-input],'
+                    '.prompt-input'
+                ),
+                'send': 'button[aria-label*="Send"], button[aria-label*="Submit"], button[type="submit"]',
+                'response': (
+                    'div.response-content, div.model-response, '
+                    'div[data-message-author="assistant"], .message-content, div.markdown-body'
+                ),
+                'new_chat': 'button[aria-label*="New chat"], button[aria-label*="New conversation"]'
             }
         }
 
@@ -102,13 +295,24 @@ class BrowserAI:
             time.sleep(3)
 
             # Try to load saved cookies
+            loaded_anything = False
+
             if self.load_cookies():
-                print(f"✓ Loaded saved session")
+                print(f"✓ Loaded saved cookies")
+                loaded_anything = True
+
+            if self.load_storage():
+                print(f"✓ Restored local storage")
+                loaded_anything = True
+
+            if loaded_anything:
                 self.driver.refresh()
                 time.sleep(3)
 
+            force_manual_login = self.provider == 'gemini' and not loaded_anything
+
             # Check if we need to login
-            if self.needs_login():
+            if force_manual_login or self.needs_login():
                 print(f"⚠️  Please login to {self.provider.upper()} manually")
                 print("Browser will open for login...")
 
@@ -123,8 +327,9 @@ class BrowserAI:
 
                 input("Press Enter after you've logged in...")
 
-                # Save cookies for next time
+                # Save cookies and storage for next time
                 self.save_cookies()
+                self.save_storage()
                 print(f"✓ Session saved")
 
             self.is_initialized = True
@@ -147,6 +352,32 @@ class BrowserAI:
         except Exception as e:
             print(f"⚠️  Failed to save cookies: {e}")
 
+    def save_storage(self):
+        """Persist localStorage and sessionStorage to file"""
+        if not self.driver:
+            return
+        try:
+            data = {}
+            for storage_type in ('localStorage', 'sessionStorage'):
+                items = self.driver.execute_script(f"""
+                    var store = window.{storage_type};
+                    var data = {{}};
+                    if (!store) {{
+                        return data;
+                    }}
+                    for (var i = 0; i < store.length; i++) {{
+                        var key = store.key(i);
+                        data[key] = store.getItem(key);
+                    }}
+                    return data;
+                """)
+                data[storage_type] = items or {}
+
+            with open(self.storage_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+        except Exception as e:
+            print(f"⚠️  Failed to save storage: {e}")
+
     def load_cookies(self) -> bool:
         """Load cookies from file"""
         try:
@@ -167,28 +398,62 @@ class BrowserAI:
             pass
         return False
 
+    def load_storage(self) -> bool:
+        """Restore localStorage and sessionStorage"""
+        if not self.driver or not os.path.exists(self.storage_file):
+            return False
+        try:
+            with open(self.storage_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            restored = False
+            for storage_type in ('localStorage', 'sessionStorage'):
+                store_data = data.get(storage_type, {})
+                if not isinstance(store_data, dict):
+                    continue
+                for key, value in store_data.items():
+                    try:
+                        self.driver.execute_script(
+                            f"window.{storage_type}.setItem(arguments[0], arguments[1]);",
+                            key,
+                            value,
+                        )
+                        restored = True
+                    except Exception:
+                        continue
+            return restored
+        except Exception as e:
+            print(f"⚠️  Failed to load storage: {e}")
+            return False
+
     def needs_login(self) -> bool:
         """Check if login is needed"""
         if not self.driver:
             return True
 
-        try:
-            # Simple check - can we find the input field?
-            selectors = self.selectors.get(self.provider, {})
-            input_selector = selectors.get('input')
+        selectors = self.selectors.get(self.provider, {})
+        input_selector = selectors.get('input')
 
-            if input_selector:
-                WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, input_selector))
-                )
-                return False  # Found input, no login needed
-        except:
-            pass
+        if input_selector:
+            wait_timeout = 12 if self.provider == 'gemini' else 5
+            if self.provider == 'gemini':
+                if self._gemini_input_present(timeout=wait_timeout):
+                    return False
+            else:
+                try:
+                    WebDriverWait(self.driver, wait_timeout).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, input_selector))
+                    )
+                    return False
+                except TimeoutException:
+                    pass
+                except Exception:
+                    pass
 
         # Check for login keywords
         try:
             page_text = self.driver.find_element(By.TAG_NAME, 'body').text.lower()
-            login_words = ['sign in', 'log in', 'sign up', 'welcome to']
+            login_words = ['sign in', 'log in', 'sign up', 'welcome to', 'choose an account']
 
             for word in login_words:
                 if word in page_text:
@@ -196,7 +461,130 @@ class BrowserAI:
         except:
             pass
 
+        return self._provider_login_guard()
+
+    def _provider_login_guard(self) -> bool:
+        """Apply provider-specific login heuristics"""
+        if not self.driver:
+            return True
+
+        if self.provider == 'gemini':
+            try:
+                current_url = (self.driver.current_url or '').lower()
+                if 'accounts.google' in current_url:
+                    return True
+            except:
+                pass
+
+            try:
+                sign_in_elements = self.driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(@href,'accounts.google.com')] | "
+                    "//button[contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in')] | "
+                    "//a[contains(translate(normalize-space(text()), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in')]"
+                )
+                for elem in sign_in_elements:
+                    try:
+                        if elem.is_displayed():
+                            return True
+                    except:
+                        continue
+            except:
+                pass
+
+            try:
+                aria_signin = self.driver.find_elements(By.CSS_SELECTOR, "[aria-label*='Sign in'], [aria-label*='Sign In']")
+                for elem in aria_signin:
+                    try:
+                        if elem.is_displayed():
+                            return True
+                    except:
+                        continue
+            except:
+                pass
+
+            try:
+                body_text = self.driver.find_element(By.TAG_NAME, 'body').text.lower()
+                keywords = ['sign in to gemini', 'choose an account', 'use another account', 'try gemini']
+                if any(keyword in body_text for keyword in keywords):
+                    return True
+            except:
+                pass
+
         return False
+
+    def _gemini_selector_list(self):
+        selectors = self.selectors.get('gemini', {}).get('input', '')
+        return [sel.strip() for sel in selectors.split(',') if sel.strip()]
+
+    def _probe_gemini_input(self, request_element: bool = False):
+        if not self.driver:
+            return None if request_element else False
+
+        selector_list = self._gemini_selector_list()
+        try:
+            result = self.driver.execute_script(
+                GEMINI_INPUT_LOCATOR_SCRIPT,
+                selector_list,
+                GEMINI_INPUT_KEYWORDS,
+                request_element,
+            )
+        except Exception:
+            result = None
+
+        if request_element:
+            return result
+        return bool(result)
+
+    def _nudge_gemini_input_surface(self) -> bool:
+        if not self.driver:
+            return False
+        try:
+            return bool(
+                self.driver.execute_script(
+                    """
+                    const selectors = arguments[0] || [];
+                    for (const sel of selectors) {
+                        if (!sel) continue;
+                        const el = document.querySelector(sel);
+                        if (el && el.offsetParent !== null) {
+                            try { el.scrollIntoView({block: 'center'}); } catch (err) {}
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                    """,
+                    GEMINI_WAKE_SELECTORS,
+                )
+            )
+        except Exception:
+            return False
+
+    def _gemini_input_present(self, timeout: float = 0) -> bool:
+        if not self.driver:
+            return False
+        deadline = time.time() + max(0, timeout)
+        while True:
+            if self._probe_gemini_input(False):
+                return True
+            if time.time() >= deadline:
+                break
+            self._nudge_gemini_input_surface()
+            time.sleep(0.35)
+        return False
+
+    def _find_gemini_input_element(self, timeout: float = 12.0):
+        if not self.driver:
+            return None
+        end_time = time.time() + max(timeout, 1.0)
+        while time.time() < end_time:
+            element = self._probe_gemini_input(True)
+            if element:
+                return element
+            self._nudge_gemini_input_surface()
+            time.sleep(0.4)
+        return None
 
     def send_prompt(self, prompt: str, timeout: int = 30) -> Optional[str]:
         """
@@ -309,33 +697,97 @@ class BrowserAI:
             input_element = None
             print(f"⏳ Sending prompt...")
 
-            for selector in input_selector.split(','):
-                try:
-                    input_element = WebDriverWait(self.driver, 5).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector.strip()))
-                    )
-                    if input_element:
-                        break
-                except TimeoutException:
-                    continue
-                except Exception:
-                    continue
+            wait_timeout = 12 if self.provider == 'gemini' else 5
+            if self.provider == 'gemini':
+                input_element = self._find_gemini_input_element(wait_timeout)
+            else:
+                for selector in input_selector.split(','):
+                    selector = selector.strip()
+                    if not selector:
+                        continue
+                    try:
+                        input_element = WebDriverWait(self.driver, wait_timeout).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                        )
+                        if input_element:
+                            break
+                    except TimeoutException:
+                        continue
+                    except Exception:
+                        continue
 
             if not input_element:
                 print(f"❌ Could not find input field")
                 return None
 
             # Click and clear the input
-            input_element.click()
+            try:
+                input_element.click()
+            except Exception:
+                try:
+                    self.driver.execute_script("arguments[0].click();", input_element)
+                except Exception:
+                    pass
             time.sleep(0.2)
+            if self.provider == 'gemini':
+                try:
+                    self.driver.execute_script(
+                        "arguments[0].focus(); arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
+                        input_element,
+                    )
+                except Exception:
+                    pass
 
             # Clear any existing text
-            input_element.send_keys(Keys.CONTROL + "a")
-            input_element.send_keys(Keys.DELETE)
+            try:
+                input_element.send_keys(Keys.CONTROL + "a")
+                input_element.send_keys(Keys.DELETE)
+            except Exception:
+                try:
+                    if (input_element.get_attribute("contenteditable") or "").lower() == "true":
+                        self.driver.execute_script("arguments[0].innerText = '';", input_element)
+                    else:
+                        self.driver.execute_script("arguments[0].value = '';", input_element)
+                except Exception:
+                    pass
             time.sleep(0.15)
 
             # Type the prompt
-            input_element.send_keys(prompt)
+            typed_prompt = False
+            try:
+                input_element.send_keys(prompt)
+                typed_prompt = True
+            except Exception:
+                pass
+
+            if not typed_prompt:
+                try:
+                    self.driver.execute_script(
+                        """
+                        const el = arguments[0];
+                        const value = arguments[1];
+                        if (!el) { return false; }
+                        if (el.tagName === 'TEXTAREA') {
+                            el.value = value;
+                        } else if (el.isContentEditable) {
+                            el.innerText = value;
+                        } else {
+                            el.textContent = value;
+                        }
+                        const Ctor = typeof InputEvent === 'function' ? InputEvent : Event;
+                        el.dispatchEvent(new Ctor('input', {bubbles: true}));
+                        return true;
+                        """,
+                        input_element,
+                        prompt,
+                    )
+                    typed_prompt = True
+                except Exception:
+                    typed_prompt = False
+
+            if not typed_prompt:
+                print("❌ Failed to type prompt")
+                return None
 
             previous_counts = snapshot_response_counts()
 
@@ -405,7 +857,17 @@ class BrowserAI:
 
             if final_response:
                 # Clean up UI elements from the response
-                ui_elements = ['Retry', 'Copy', 'Copy code', 'Regenerate', 'Continue']
+                ui_elements = [
+                    'Retry',
+                    'Copy',
+                    'Copy code',
+                    'Regenerate',
+                    'Continue',
+                    'Show thinking',
+                    'Hide thinking',
+                    'ChatGPT said:',
+                    'ChatGPT said',
+                ]
                 for element in ui_elements:
                     final_response = final_response.replace(element, '').strip()
 
@@ -414,6 +876,9 @@ class BrowserAI:
                     final_response = final_response.replace('\n\n\n', '\n\n')
 
                 final_response = final_response.strip()
+
+                if self.provider == 'deepseek':
+                    final_response = strip_deepseek_thinking(final_response)
 
                 print(f"✓ Response received ({len(final_response)} chars)")
                 return final_response
@@ -551,6 +1016,7 @@ REASON: one sentence"""
         if self.driver:
             try:
                 self.save_cookies()
+                self.save_storage()
             except:
                 pass
 
@@ -600,7 +1066,7 @@ def get_browser_ai(provider: str = 'claude') -> BrowserAI:
     Get a browser AI instance for a specific provider
 
     Args:
-        provider: 'claude', 'chatgpt', or 'deepseek'
+        provider: 'claude', 'chatgpt', 'deepseek', or 'gemini'
 
     Returns:
         BrowserAI instance
