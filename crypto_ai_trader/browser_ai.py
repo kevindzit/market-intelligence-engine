@@ -174,6 +174,18 @@ GEMINI_REASONING_PATTERNS = [
     re.compile(r'^\s*drafting\b', re.IGNORECASE),
 ]
 
+CHATGPT_ERROR_MARKERS = (
+    'something went wrong',
+    'unable to load history',
+    'please contact us through our help center',
+    'issue persists',
+    'error generating response',
+    'conversation could not be loaded',
+    'try again',
+    'there was an error',
+    'failed to load',
+)
+
 DEEPSEEK_THINKING_MARKERS = (
     'thought for',
     'thinking for',
@@ -482,7 +494,12 @@ class BrowserAI:
                 'input': 'textarea[placeholder*="Ask"], div[contenteditable="true"], textarea',
                 'send': 'button[type="submit"], button[aria-label*="Send"]',
                 'response': 'div.markdown, div[class*="message"], div[class*="response"], article',
-                'new_chat': 'button[aria-label*="New"], a[href*="chat"]'
+                'new_chat': (
+                    'button[aria-label*="new chat"],'
+                    'button[data-testid*="new-chat"],'
+                    'button[class*="new-chat"],'
+                    'div[role="button"][aria-label*="new chat"]'
+                )
             },
             'gemini': {
                 'input': (
@@ -671,8 +688,6 @@ class BrowserAI:
                 break
 
         return last_text or baseline
-
-        print(f"✓ {provider.upper()} browser initialized")
 
     def initialize(self) -> bool:
         """Start the browser and navigate to the AI service"""
@@ -997,13 +1012,14 @@ class BrowserAI:
             time.sleep(0.4)
         return None
 
-    def send_prompt(self, prompt: str, timeout: int = 30) -> Optional[str]:
+    def send_prompt(self, prompt: str, timeout: int = 30, _attempt: int = 1) -> Optional[str]:
         """
         Send a prompt and get the response
 
         Args:
             prompt: The text to send
             timeout: Max seconds to wait for response
+            _attempt: Internal retry counter (do not set manually)
 
         Returns:
             The AI's response text or None
@@ -1094,8 +1110,8 @@ class BrowserAI:
 
                 return False
 
-            # Try to start a new chat when the provider benefits from it
-            if self.auto_new_chat:
+            # Try to start a new chat when the provider benefits from it (first attempt only)
+            if self.auto_new_chat and _attempt == 1:
                 self.try_new_chat()
 
             if self.provider == 'claude':
@@ -1348,6 +1364,7 @@ class BrowserAI:
                     'Hide thinking',
                     'ChatGPT said:',
                     'ChatGPT said',
+                    'Edit',
                 ]
                 for element in ui_elements:
                     final_response = final_response.replace(element, '').strip()
@@ -1373,6 +1390,24 @@ class BrowserAI:
                 if self.provider == 'gemini' and gemini_response_is_reasoning(final_response):
                     print("❌ Gemini response still looks like decoding/status text")
                     return None
+                if self.provider == 'chatgpt':
+                    lower_final = final_response.lower()
+                    if any(marker in lower_final for marker in CHATGPT_ERROR_MARKERS):
+                        if _attempt < 2:
+                            print("⚠️ ChatGPT returned an error message, retrying once...")
+                            try:
+                                self.driver.refresh()
+                                time.sleep(3)
+                            except Exception:
+                                pass
+                            try:
+                                self.try_new_chat()
+                            except Exception:
+                                pass
+                            return self.send_prompt(prompt, timeout, _attempt + 1)
+                        else:
+                            print("❌ ChatGPT error persisted after retry")
+                            return None
 
                 if not final_response:
                     print("❌ Response element exists but only contained status text")

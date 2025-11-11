@@ -22,14 +22,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     from colorama import Fore, Style, init as colorama_init
     colorama_init(autoreset=True)
-    COLORS_ENABLED = True
 except ImportError:
     # Fallback: no colors
     class Fore:
         GREEN = RED = YELLOW = CYAN = WHITE = MAGENTA = BLUE = ""
     class Style:
         BRIGHT = RESET_ALL = ""
-    COLORS_ENABLED = False
 
 
 # Model configurations for each provider
@@ -1330,6 +1328,8 @@ def inject_claude_options(browser_ai, options: Dict):
 
     except Exception as e:
         print(f"   {Fore.CYAN}[INFO] Could not set advanced options: {e}{Style.RESET_ALL}")
+
+
 def inject_deepseek_options(browser_ai, options: Dict):
     """
     Inject DeepSeek-specific options (DeepThink and Search toggles)
@@ -1735,6 +1735,72 @@ def ensure_gemini_new_chat(browser_ai):
         pass
 
 
+def ensure_deepseek_new_chat(browser_ai):
+    """Always start DeepSeek with a fresh chat pane."""
+    driver = getattr(browser_ai, "driver", None)
+    if not driver:
+        return
+
+    import time
+
+    # Try the generic helper first
+    try:
+        browser_ai.try_new_chat()
+    except Exception:
+        pass
+
+    try:
+        clicked = driver.execute_script(
+            """
+            const keywords = (arguments[0] || []).map(k => (k || '').toLowerCase());
+            if (!keywords.length) {
+                return '';
+            }
+            const nodes = Array.from(
+                document.querySelectorAll('button,a,div[role="button"],span[role="button"]')
+            );
+            for (const node of nodes) {
+                if (!node || node.offsetParent === null) continue;
+                const href = (node.getAttribute('href') || '').toLowerCase();
+                if (href && href.includes('/c/')) continue;
+                const conversationId = (node.getAttribute('data-conversation-id') || '').trim();
+                if (conversationId) continue;
+                const combined = [
+                    (node.innerText || ''),
+                    (node.textContent || ''),
+                    (node.getAttribute('aria-label') || ''),
+                    (node.getAttribute('title') || '')
+                ].join(' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+                if (!combined) continue;
+                if (keywords.some(keyword => combined.includes(keyword))) {
+                    try {
+                        node.click();
+                    } catch (err) {
+                        try {
+                            node.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                        } catch (err2) {}
+                    }
+                    return combined;
+                }
+            }
+            return '';
+            """,
+            [
+                "new chat",
+                "start new chat",
+                "start over",
+                "new conversation",
+                "create chat",
+                "compose",
+            ],
+        )
+        if clicked:
+            time.sleep(0.5)
+            print(f"   {Fore.CYAN}[INFO] Started new DeepSeek chat{Style.RESET_ALL}")
+    except Exception:
+        pass
+
+
 def provider_requires_login(browser_ai, provider: str) -> bool:
     """Check whether the provider page is still prompting for login."""
     try:
@@ -1927,7 +1993,7 @@ def main():
             ensure_gemini_new_chat(browser_ai)
             inject_gemini_model_selection(browser_ai, model_selector)
         elif provider == 'deepseek':
-            pass  # DeepSeek has only one model today
+            ensure_deepseek_new_chat(browser_ai)
 
         # Provider-specific option toggles
         if provider == 'claude':
