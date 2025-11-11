@@ -143,6 +143,37 @@ if (returnElement && fallback) {
 return false;
 """
 
+GEMINI_REASONING_MARKERS = (
+    'decoding',
+    'decoding the input',
+    'decoding "',
+    'decoding bro time',
+    'processing request',
+    'interpreting input',
+    'translating input',
+    'understanding request',
+    'analyzing input',
+    'gathering context',
+    'thinking through',
+    'reasoning mode',
+    'deep thinking',
+    'drafting response',
+    'working on it',
+    'hang tight',
+    'one moment',
+)
+
+GEMINI_REASONING_PATTERNS = [
+    re.compile(r'^\s*decoding\b', re.IGNORECASE),
+    re.compile(r'^\s*interpreting\b', re.IGNORECASE),
+    re.compile(r'^\s*understanding\b', re.IGNORECASE),
+    re.compile(r'^\s*processing\b', re.IGNORECASE),
+    re.compile(r'^\s*thinking\b', re.IGNORECASE),
+    re.compile(r'^\s*analysis\b', re.IGNORECASE),
+    re.compile(r'^\s*working on\b', re.IGNORECASE),
+    re.compile(r'^\s*drafting\b', re.IGNORECASE),
+]
+
 DEEPSEEK_THINKING_MARKERS = (
     'thought for',
     'thinking for',
@@ -306,6 +337,57 @@ def strip_deepseek_thinking(text: str) -> str:
         return "\n".join(filtered_lines).strip()
 
     return lines[-1]
+
+
+def gemini_line_is_reasoning(line: str) -> bool:
+    if not line:
+        return True
+    stripped = line.strip()
+    if not stripped:
+        return True
+    lowered = stripped.lower()
+    if any(marker in lowered for marker in GEMINI_REASONING_MARKERS):
+        return True
+    for pattern in GEMINI_REASONING_PATTERNS:
+        if pattern.search(stripped):
+            return True
+    if len(stripped) <= 5 and stripped.isalpha():
+        return True
+    return False
+
+
+def gemini_response_is_reasoning(text: str) -> bool:
+    if not text:
+        return True
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return True
+    reasoning_lines = sum(1 for line in lines if gemini_line_is_reasoning(line))
+    if reasoning_lines == len(lines):
+        return True
+    if len(lines) <= 2 and reasoning_lines >= 1:
+        return True
+    if len(text.strip()) <= 24 and reasoning_lines >= 1:
+        return True
+    return False
+
+
+def strip_gemini_reasoning_lines(text: str) -> str:
+    if not text:
+        return ""
+    lines = [line.rstrip() for line in text.splitlines()]
+    cleaned = []
+    skipping = True
+    for line in lines:
+        if skipping and gemini_line_is_reasoning(line):
+            continue
+        skipping = False
+        cleaned.append(line.strip())
+    while cleaned and gemini_line_is_reasoning(cleaned[-1]):
+        cleaned.pop()
+    if not cleaned and lines:
+        cleaned = [lines[-1].strip()]
+    return "\n".join(cleaned).strip()
 
 
 def claude_line_is_reasoning(line: str) -> bool:
@@ -556,6 +638,34 @@ class BrowserAI:
                 if current_text != last_text:
                     last_text = current_text
                 if len(current_text) > baseline_len + 5 or not deepseek_response_is_reasoning(current_text):
+                    return current_text
+            except Exception:
+                break
+
+        return last_text or baseline
+
+    def _wait_for_gemini_answer(self, selector: str, initial_text: str, extra_seconds: int = 8) -> str:
+        """Wait for Gemini (especially Pro) to finish decoding before we read the output."""
+        if self.provider != 'gemini' or not self.driver or not selector:
+            return initial_text
+
+        baseline = (initial_text or "").strip()
+        baseline_len = len(baseline)
+        last_text = baseline
+        end_time = time.time() + max(4, extra_seconds)
+
+        while time.time() < end_time:
+            time.sleep(0.4)
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if not elements:
+                    continue
+                current_text = (elements[-1].text or "").strip()
+                if not current_text:
+                    continue
+                if current_text != last_text:
+                    last_text = current_text
+                if len(current_text) > baseline_len + 10 or not gemini_response_is_reasoning(current_text):
                     return current_text
             except Exception:
                 break
@@ -1221,6 +1331,12 @@ class BrowserAI:
                         final_response,
                         max(6, timeout // 2),
                     )
+                elif self.provider == 'gemini' and gemini_response_is_reasoning(final_response):
+                    final_response = self._wait_for_gemini_answer(
+                        working_selector,
+                        final_response,
+                        max(6, timeout // 2),
+                    )
                 # Clean up UI elements from the response
                 ui_elements = [
                     'Retry',
@@ -1246,11 +1362,16 @@ class BrowserAI:
                     final_response = strip_deepseek_thinking(final_response)
                 elif self.provider == 'claude':
                     final_response = strip_claude_reasoning_lines(final_response)
+                elif self.provider == 'gemini':
+                    final_response = strip_gemini_reasoning_lines(final_response)
 
                 final_response = final_response.strip()
 
                 if self.provider == 'deepseek' and deepseek_response_is_reasoning(final_response):
                     print("❌ DeepSeek response still looks like reasoning; giving up")
+                    return None
+                if self.provider == 'gemini' and gemini_response_is_reasoning(final_response):
+                    print("❌ Gemini response still looks like decoding/status text")
                     return None
 
                 if not final_response:
