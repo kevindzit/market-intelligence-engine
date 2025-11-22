@@ -17,7 +17,11 @@
       "Bash(cmd /c \"dir monitors\\*cookie*.py monitors\\refresh*.py 2>&1\")",
       "Bash(taskkill:*)",
       "Bash(cmd /c \"dir house_data\\processed_docs.txt 2>&1\")",
-      "Bash(cmd /c \"taskkill /IM python.exe /T\")"
+      "Bash(cmd /c \"taskkill /IM python.exe /T\")",
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": []
