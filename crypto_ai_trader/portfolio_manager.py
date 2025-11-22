@@ -29,10 +29,18 @@ MAX_WIN_RATE_FOR_REDUCTION = 0.35  # Only reduce if <35% win rate (7/20 losses)
 class PortfolioManager:
     """
     Manages paper trading portfolio with realistic execution simulation
+    Can optionally use real Binance trading interface
     """
 
-    def __init__(self, db_config: Dict, initial_capital: float):
-        """Initialize portfolio manager"""
+    def __init__(self, db_config: Dict, initial_capital: float, trading_interface=None):
+        """
+        Initialize portfolio manager
+
+        Args:
+            db_config: Database configuration
+            initial_capital: Starting capital in USDT
+            trading_interface: Optional TradingInterface instance for real execution
+        """
         self.db_config = db_config
         self.initial_capital = initial_capital
         self.cash = initial_capital
@@ -46,6 +54,19 @@ class PortfolioManager:
         self.max_drawdown = 0
         self.peak_value = initial_capital
 
+        # Optional real trading interface (Binance)
+        self.trading_interface = trading_interface
+        if trading_interface:
+            print(f"[Portfolio] Using {'TESTNET' if trading_interface.paper_trading else 'REAL'} Binance trading")
+            # Sync initial balance from exchange
+            actual_balance = trading_interface.get_balance('USDT')
+            if actual_balance > 0:
+                self.cash = actual_balance
+                self.initial_capital = actual_balance
+                print(f"[Portfolio] Synced balance from exchange: ${actual_balance:,.2f}")
+        else:
+            print(f"[Portfolio] Using internal simulation (no exchange)")
+
         # Connect to database
         self.conn = psycopg2.connect(
             host=db_config['host'],
@@ -55,7 +76,7 @@ class PortfolioManager:
             password=db_config['password']
         )
 
-        print(f"[Portfolio] Initialized with ${initial_capital:,.2f}")
+        print(f"[Portfolio] Initialized with ${self.initial_capital:,.2f}")
         self.save_portfolio_state()
 
     def get_current_price(self, token: str) -> Optional[float]:
@@ -385,6 +406,16 @@ class PortfolioManager:
                 'remaining_pct': 100.0  # Track remaining position percentage
             }
 
+            # Execute real trade if trading interface available
+            if self.trading_interface and position_type == 'LONG':
+                # For now, only handle LONG positions on Binance spot
+                # SHORT positions would need futures account
+                order = self.trading_interface.buy(token, position_value)
+                if not order:
+                    print(f"[ERROR] Binance order failed for {token}")
+                    return False
+                print(f"[BINANCE] Order executed: {order.get('orderId', 'N/A')}")
+
             # Update portfolio
             self.positions[token] = position
             self.cash -= total_cost
@@ -457,6 +488,15 @@ class PortfolioManager:
                 pnl_pct = ((position['entry_price'] - exit_price) / position['entry_price']) * 100
                 # Return collateral + profit (or - loss)
                 cash_returned = position['position_value'] + pnl
+
+            # Execute real trade if trading interface available
+            if self.trading_interface and position_type == 'LONG':
+                # For LONG positions, sell the token
+                order = self.trading_interface.sell(token, position['quantity'])
+                if not order:
+                    print(f"[ERROR] Binance sell order failed for {token}")
+                    return False
+                print(f"[BINANCE] Sell order executed: {order.get('orderId', 'N/A')}")
 
             # Update cash
             self.cash += cash_returned

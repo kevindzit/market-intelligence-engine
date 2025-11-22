@@ -276,11 +276,13 @@ class TwitterAccountPool:
 
                 orchestrator_mode = os.getenv('ORCHESTRATOR_RUNNING', 'false').lower() == 'true'
 
-                # Always try headless first for automation, only show window if it fails
+                # When orchestrated, always show the window so the operator can see/assist.
+                # Otherwise, try headless first and fall back to interactive near the end.
                 def should_use_headless(attempt):
-                    # First attempts are headless for automation
-                    # Last attempt shows window as fallback
-                    return attempt < max_attempts
+                    if orchestrator_mode:
+                        return False
+                    # Keep final 2 attempts interactive
+                    return attempt <= max_attempts - 2
 
                 cookies = None
 

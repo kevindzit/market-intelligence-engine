@@ -557,12 +557,15 @@ def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
                 mode_label = "headless" if use_headless else "interactive"
                 print(f"[AUTO-REFRESH] Attempt {attempt}/{max_attempts} ({mode_label})")
 
+                # Use the enhanced refresh (with SeleniumBase for Cloudflare)
                 cookies = refresh_cookies(
                     headless=use_headless,
                     account_email=account_email,
                     account_password=account_password,
                     account_username=account_username
                 )
+                if cookies:
+                    print(f"[AUTO-REFRESH] ✓ Enhanced refresh successful")
 
                 if cookies:
                     break

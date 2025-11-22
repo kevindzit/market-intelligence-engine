@@ -7,14 +7,20 @@ import re
 import os
 from datetime import datetime, timezone
 from dotenv import load_dotenv
-import requests # Import the requests library
+import requests  # Import the requests library
+
+try:
+    from scraper_utils.heartbeat import touch_heartbeat
+except ImportError:
+    def touch_heartbeat(_: str):
+        pass
 
 # Load environment variables
 load_dotenv()
 
 # --- Configuration ---
-# SEC RSS feed for the 100 latest filings
-SEC_RSS_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&owner=only&count=100&output=atom"
+# SEC RSS feed for the 100 latest corporate filings (exclude insider-only stream)
+SEC_RSS_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&owner=exclude&count=100&output=atom"
 
 # *** THIS IS THE FIX ***
 # The SEC requires a custom User-Agent in the format: "Sample Company Name AdminContact@example.com"
@@ -33,9 +39,19 @@ DB_HOST = os.getenv('DB_HOST', 'localhost')
 DB_PORT = os.getenv('DB_PORT', '54594')
 
 # --- Optional: Filter for specific form types ---
-# Leave this list empty [] to capture ALL form types.
-# Or specify forms like ["8-K", "10-Q", "4"] to only capture those.
-FORM_TYPE_FILTER = ["8-K", "10-Q", "4", "10-K"]
+# Leave the env var blank to capture ALL form types.
+DEFAULT_FORM_TYPE_FILTER = ["8-K", "10-Q", "4", "10-K"]
+form_filter_raw = os.getenv("SEC_FORM_TYPES")
+if form_filter_raw is None:
+    form_filter_raw = ",".join(DEFAULT_FORM_TYPE_FILTER)
+FORM_TYPE_FILTER = [
+    form.strip().upper()
+    for form in form_filter_raw.split(",")
+    if form.strip()
+]
+
+# Polling cadence (minutes)
+POLL_INTERVAL_MINUTES = max(int(os.getenv("SEC_POLL_INTERVAL_MINUTES", "5")), 1)
 
 def setup_logging():
     """Sets up basic logging to console."""
@@ -67,6 +83,28 @@ def parse_filing_title(title):
     if match:
         return match.groupdict()
     return None
+
+
+def determine_form_type(entry, parsed_title):
+    """Prefer the feed's category/tag for form type, fallback to parsed title."""
+    tag_term = None
+    tags = getattr(entry, 'tags', None)
+    if tags:
+        for tag in tags:
+            term = tag.get('term') or tag.get('label')
+            if term:
+                tag_term = term
+                break
+
+    category = getattr(entry, 'category', None)
+    if category and not tag_term:
+        if isinstance(category, dict):
+            tag_term = category.get('term') or category.get('label')
+        else:
+            tag_term = getattr(category, 'term', None) or getattr(category, 'label', None) or str(category)
+
+    raw_form = tag_term or (parsed_title['form_type'] if parsed_title else None)
+    return raw_form.strip().upper() if raw_form else None
 
 def fetch_and_store_sec_filings():
     """Fetches latest SEC filings from RSS feed and stores them in PostgreSQL."""
@@ -108,10 +146,13 @@ def fetch_and_store_sec_filings():
                     logging.warning(f"Could not parse title: {entry.title}")
                     continue
 
-                form_type = parsed_title['form_type'].strip()
+                form_type = determine_form_type(entry, parsed_title)
+                if not form_type:
+                    logging.warning(f"Could not determine form type for entry: {entry.title}")
+                    continue
 
                 # Apply the form type filter if it's not empty
-                if FORM_TYPE_FILTER and form_type not in FORM_TYPE_FILTER:
+                if FORM_TYPE_FILTER and form_type.upper() not in FORM_TYPE_FILTER:
                     continue
 
                 filing_url = entry.link
@@ -152,6 +193,7 @@ def fetch_and_store_sec_filings():
             conn.close()
 
     logging.info(f"SEC filing fetch complete. Added {added_count} new filings.")
+    touch_heartbeat('SEC EDGAR Reader')
 
 
 if __name__ == "__main__":
@@ -161,9 +203,9 @@ if __name__ == "__main__":
     # Run once immediately
     fetch_and_store_sec_filings()
 
-    # Schedule to run every 10 minutes
-    schedule.every(10).minutes.do(fetch_and_store_sec_filings)
-    logging.info("Scheduled EDGAR filing checks every 10 minutes.")
+    # Schedule based on configurable interval
+    schedule.every(POLL_INTERVAL_MINUTES).minutes.do(fetch_and_store_sec_filings)
+    logging.info(f"Scheduled EDGAR filing checks every {POLL_INTERVAL_MINUTES} minutes.")
 
     while True:
         schedule.run_pending()

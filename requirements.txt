@@ -3,10 +3,12 @@ psycopg2-binary>=2.9.9
 
 # Web scraping packages
 selenium>=4.15.0
+seleniumbase>=4.44.0  # Best for Cloudflare Turnstile bypass in 2025
 webdriver-manager>=4.0.1
 undetected-chromedriver>=3.5.5
 beautifulsoup4>=4.12.2
 pdfplumber>=0.10.3
+pyautogui>=0.9.54  # For physical mouse movements (Cloudflare bypass)
 
 # API and data packages
 requests>=2.31.0

@@ -7,14 +7,11 @@ import asyncio
 import time
 import signal
 import sys
+from contextlib import closing
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import json
-import anthropic
-import google.generativeai as genai
-from openai import OpenAI
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
 import os
 from dotenv import load_dotenv
 import psycopg2
@@ -27,7 +24,7 @@ try:
     from crypto_ai_trader.market_analyzer import MarketAnalyzer
     from crypto_ai_trader.ai_optimizer import AIOptimizer
     from crypto_ai_trader.trade_learner import TradeLearner
-    from crypto_ai_trader.browser_ai import get_browser_ai, cleanup_all_browsers
+    from crypto_ai_trader.macro_intelligence import MacroIntelligence
     from crypto_ai_trader import config
 except ImportError:
     # Fall back to local imports (for running directly)
@@ -36,10 +33,81 @@ except ImportError:
     from market_analyzer import MarketAnalyzer
     from ai_optimizer import AIOptimizer
     from trade_learner import TradeLearner
-    from browser_ai import get_browser_ai, cleanup_all_browsers
+    from macro_intelligence import MacroIntelligence
     import config
 
+# Optional browser modules (safe fallbacks if unavailable)
+try:
+    from crypto_ai_trader.browser_ai import cleanup_all_browsers
+    from crypto_ai_trader.browser_agents.conversation_orchestrator import (
+        build_data_orchestrator,
+        build_verification_orchestrator,
+    )
+    from crypto_ai_trader.browser_agents.decision_logger import BrowserDecisionLogger
+except ImportError:
+    try:
+        from browser_ai import cleanup_all_browsers
+        from browser_agents.conversation_orchestrator import (
+            build_data_orchestrator,
+            build_verification_orchestrator,
+        )
+        from browser_agents.decision_logger import BrowserDecisionLogger
+    except ImportError:
+        def cleanup_all_browsers():
+            return None
+
+        def build_data_orchestrator(*args, **kwargs):
+            return None
+
+        def build_verification_orchestrator(*args, **kwargs):
+            return None
+
+        class BrowserDecisionLogger:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def log(self, *args, **kwargs):
+                pass
+
 load_dotenv()
+
+BROWSER_AGENT_PRIMING_PROMPT = """You are an AI crypto trading analyst operating inside a browser chat.
+
+Conversation protocol:
+- You will receive an initial quick summary for one token. Reply using a single chat message each turn.
+- To request more data, emit one line exactly like:
+      REQUEST: sentiment | token=BTC | window=6h
+      REQUEST: price | token=BTC | window=24h
+  Each REQUEST must specify the token and window as shown.
+- After every request you will receive CONTEXT blocks containing the data you asked for.
+- When you are ready to decide, respond with EXACTLY one line in this format:
+      COMPLETE: decision | action=<BUY/SELL/HOLD/SHORT> | confidence=<0-1> | position_size=<0-1> | stop_loss_pct=<value> | take_profit_pct=<value> | reasoning=<short text>
+
+Rules:
+- Actions must be BUY, SELL, HOLD, or SHORT.
+- confidence and position_size must be numeric values between 0 and 1.
+- stop_loss_pct and take_profit_pct must be numeric percentages (you may omit the % symbol).
+- reasoning must be a brief clause (<= 20 words).
+- Do NOT add bullet points, markdown, or extra sentences before or after the COMPLETE line.
+"""
+
+BROWSER_VERIFIER_PROMPT = """You are a risk officer reviewing AI trading decisions.
+
+Protocol:
+1. You will receive the proposed action, confidence, size, stops, and reasoning.
+2. Request any additional data you need using:
+       REQUEST: sentiment | token=BTC | window=6h
+       REQUEST: price | token=BTC | window=24h
+3. When ready, respond with:
+       COMPLETE: verdict | status=PASS | reason=<one sentence>
+       COMPLETE: verdict | status=FAIL | reason=<one sentence>
+
+Rules:
+- PASS only when the decision respects risk (liquidity, correlation, cascades).
+- FAIL when you detect unacceptable risk and explain why in <= 2 sentences.
+- Emit exactly one COMPLETE line with status=PASS or status=FAIL and a concise reason. No extra commentary before or after the line.
+- Do not modify the trade parameters; only judge risk suitability.
+"""
 
 class AITrader:
     """
@@ -68,8 +136,27 @@ class AITrader:
         # Initialize data intelligence
         self.data_intel = DataIntelligence(self.db_config)
 
-        # Initialize portfolio manager
-        self.portfolio = PortfolioManager(self.db_config, config.INITIAL_CAPITAL)
+        # Initialize macro intelligence for filtered traditional finance data
+        self.macro_intel = MacroIntelligence(self.db_config)
+
+        # Initialize trading interface if enabled
+        self.trading_interface = None
+        if getattr(config, 'USE_BINANCE_TRADING', False):
+            try:
+                from crypto_ai_trader.trading_interface import TradingInterface
+                paper_trading = getattr(config, 'PAPER_TRADING', True)
+                self.trading_interface = TradingInterface(paper_trading=paper_trading)
+                if self.trading_interface.test_connection():
+                    print(f"[BINANCE] Connected to {'TESTNET' if paper_trading else 'REAL'} trading")
+                else:
+                    print("[WARNING] Binance connection failed, using simulation only")
+                    self.trading_interface = None
+            except Exception as e:
+                print(f"[WARNING] Could not initialize Binance interface: {e}")
+                print("[INFO] Using simulation only")
+
+        # Initialize portfolio manager (with optional trading interface)
+        self.portfolio = PortfolioManager(self.db_config, config.INITIAL_CAPITAL, self.trading_interface)
 
         # Initialize market analyzer for regime detection
         self.market_analyzer = MarketAnalyzer()
@@ -86,14 +173,18 @@ class AITrader:
         # Track active trades for learning
         self.active_trades = {}  # token -> (entry_time, entry_price, decision)
 
-        # Initialize Claude client
-        self.claude_client = anthropic.Anthropic(api_key=config.CLAUDE_API_KEY)
+        # Describe which data layers should be fetched for dynamic context building
+        self.context_layers = self._define_context_layers()
 
-        # Initialize ensemble clients if enabled
-        if config.ENABLE_TIER2_VERIFICATION:
-            self.init_ensemble_clients()
-        else:
-            self.ensemble_clients = None
+        # Browser utilities
+        self.browser_orchestrator = None
+        log_dir = getattr(
+            config,
+            'BROWSER_DECISION_LOG_DIR',
+            os.path.join(os.getcwd(), 'logs', 'browser_decisions')
+        )
+        self.browser_logger = BrowserDecisionLogger(log_dir)
+        self.browser_verifier = None
 
         # Trading state
         self.trading_active = True
@@ -101,6 +192,25 @@ class AITrader:
         self.consecutive_losses = 0
         self.daily_trade_count = 0
         self.daily_pnl = 0
+        self._last_daily_reset = datetime.now().date()
+        self.defi_position_adjustment = 1.0  # DeFi risk-based position adjustment
+        self.options_position_adjustment = 1.0  # Options volatility-based position adjustment
+        self.price_data_max_age = getattr(config, 'PRICE_DATA_MAX_AGE_MINUTES', 15)
+        self.sentiment_data_max_age = getattr(config, 'SENTIMENT_DATA_MAX_AGE_MINUTES', 30)
+        self.feed_freshness_limits = getattr(
+            config,
+            'DATA_FRESHNESS_LIMITS',
+            {
+                'crypto_ohlcv': 10,
+                'twitter_sentiment': 15,
+                'order_book_depth': 5,
+                'liquidations': 30,
+                'open_interest': 60,
+                'news_articles': 180,
+            },
+        )
+        self._last_freshness_warning: Optional[str] = None
+        self._symbol_check_cache: Dict[str, bool] = {}
 
         # Set up signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self.handle_shutdown)
@@ -110,28 +220,7 @@ class AITrader:
         print(f"[Settings] Paper Trading: {config.PAPER_TRADING}")
         print(f"[Settings] Initial Capital: ${config.INITIAL_CAPITAL:,.2f}")
         print(f"[Settings] Decision Interval: {config.DECISION_INTERVAL/60:.1f} minutes")
-        print(f"[Settings] Tier 2 Verification: {config.ENABLE_TIER2_VERIFICATION}")
         print()
-
-    def init_ensemble_clients(self):
-        """Initialize ensemble model clients for Tier 2 verification"""
-        self.ensemble_clients = {}
-
-        # DeepSeek client
-        if config.ENSEMBLE_MODELS['deepseek']['api_key']:
-            self.ensemble_clients['deepseek'] = OpenAI(
-                api_key=config.ENSEMBLE_MODELS['deepseek']['api_key'],
-                base_url="https://api.deepseek.com/v1"
-            )
-
-        # Gemini client
-        if config.ENSEMBLE_MODELS['gemini']['api_key']:
-            genai.configure(api_key=config.ENSEMBLE_MODELS['gemini']['api_key'])
-            self.ensemble_clients['gemini'] = genai.GenerativeModel(
-                config.ENSEMBLE_MODELS['gemini']['name']
-            )
-
-        print(f"[Ensemble] Initialized {len(self.ensemble_clients)} additional models")
 
     def handle_shutdown(self, signum, frame):
         """Handle graceful shutdown"""
@@ -216,48 +305,46 @@ class AITrader:
         """Check for critical tactical alerts from high-frequency monitor"""
         try:
             # Connect to database to check alerts
-            conn = psycopg2.connect(
+            with closing(psycopg2.connect(
                 host=self.db_config['host'],
                 port=self.db_config['port'],
                 user=self.db_config['user'],
                 password=self.db_config['password'],
                 database=self.db_config['database']
-            )
-
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Get unconsumed critical alerts from last 5 minutes
-                cur.execute("""
-                    SELECT
-                        id,
-                        token,
-                        alert_type,
-                        urgency,
-                        confidence,
-                        signals,
-                        recommendation,
-                        created_at
-                    FROM tactical_alerts
-                    WHERE consumed_at IS NULL
-                    AND urgency IN ('IMMEDIATE', 'HIGH')
-                    AND created_at > NOW() - INTERVAL '5 minutes'
-                    ORDER BY confidence DESC, created_at DESC
-                    LIMIT 5
-                """)
-
-                alerts = cur.fetchall()
-
-                # Mark alerts as consumed
-                if alerts:
-                    alert_ids = [a['id'] for a in alerts]
+            )) as conn:
+                with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                    # Get unconsumed critical alerts from last 5 minutes
                     cur.execute("""
-                        UPDATE tactical_alerts
-                        SET consumed_at = NOW()
-                        WHERE id = ANY(%s)
-                    """, (alert_ids,))
-                    conn.commit()
+                        SELECT
+                            id,
+                            token,
+                            alert_type,
+                            urgency,
+                            confidence,
+                            signals,
+                            recommendation,
+                            created_at
+                        FROM tactical_alerts
+                        WHERE consumed_at IS NULL
+                        AND urgency IN ('IMMEDIATE', 'HIGH')
+                        AND created_at > NOW() - INTERVAL '5 minutes'
+                        ORDER BY confidence DESC, created_at DESC
+                        LIMIT 5
+                    """)
 
-            conn.close()
-            return alerts
+                    alerts = cur.fetchall()
+
+                    # Mark alerts as consumed
+                    if alerts:
+                        alert_ids = [a['id'] for a in alerts]
+                        cur.execute("""
+                            UPDATE tactical_alerts
+                            SET consumed_at = NOW()
+                            WHERE id = ANY(%s)
+                        """, (alert_ids,))
+                        conn.commit()
+
+                return alerts
 
         except Exception as e:
             print(f"[WARNING] Could not check tactical alerts: {e}")
@@ -282,20 +369,34 @@ class AITrader:
                 print(f"[WARNING] Could not update market regime: {e}")
 
     async def run_forever(self):
-        """Main trading loop with dual-cycle architecture:
-        - Fast cycle: Check tactical alerts every 2 minutes (can trade immediately!)
-        - Slow cycle: Strategic analysis every 30 minutes
+        """Main trading loop with dual-cycle architecture driven by config:
+        - Fast cycle: Check tactical alerts on config.TACTICAL_MONITOR_INTERVAL cadence
+        - Slow cycle: Strategic analysis on config.DECISION_INTERVAL cadence
         """
+        def _describe_interval(seconds: int) -> str:
+            if seconds < 60:
+                return f"{int(seconds)} seconds"
+            minutes = seconds / 60
+            if float(minutes).is_integer():
+                minutes = int(minutes)
+                return f"{minutes} minute{'s' if minutes != 1 else ''}"
+            return f"{minutes:.1f} minutes"
+
+        base_tactical_interval = max(5, int(getattr(config, 'TACTICAL_MONITOR_INTERVAL', 120)))
+        base_strategic_interval = max(60, int(getattr(config, 'DECISION_INTERVAL', 300)))
+
+        # These will be dynamically adjusted based on volatility
+        tactical_check_interval = base_tactical_interval
+        strategic_interval = base_strategic_interval
+
         print("\n[START] Beginning AI trading with fast response system...")
-        print("  • Tactical alerts checked: Every 2 minutes")
-        print("  • Strategic analysis: Every 30 minutes")
-        print("  • Trades can execute: Within 2 minutes of critical events!")
+        print(f"  • Tactical alerts checked: Every {_describe_interval(tactical_check_interval)}")
+        print(f"  • Strategic analysis: Every {_describe_interval(strategic_interval)}")
+        print("  • Trades can execute: Within the tactical cadence of critical events!")
         print("Press Ctrl+C to stop gracefully\n")
 
         # Track when we last ran strategic analysis
         last_strategic_analysis = 0  # Force immediate strategic run on startup
-        tactical_check_interval = 120  # 2 minutes
-        strategic_interval = 1800  # 30 minutes
 
         # Track deferred tactical alerts (70-84% confidence)
         deferred_alerts = []
@@ -304,6 +405,11 @@ class AITrader:
             try:
                 loop_start = time.time()
                 executed_trades = 0
+                self._maybe_reset_daily_stats()
+
+                if not self._global_data_is_fresh():
+                    await asyncio.sleep(60)
+                    continue
 
                 # ===========================================================
                 # EMERGENCY: Check for market crash using MULTIPLE INDICATORS
@@ -333,7 +439,7 @@ class AITrader:
 
                         # Pause trading for 10 minutes
                         print("\n[PAUSE] Halting trading for 10 minutes to let market stabilize...")
-                        time.sleep(600)
+                        await asyncio.sleep(600)
                         continue
 
                     elif crash_analysis['recommendation'] == "REDUCE_EXPOSURE_50%":
@@ -359,7 +465,7 @@ class AITrader:
 
                         # Pause new positions for 5 minutes
                         print("\n[PAUSE] No new positions for 5 minutes...")
-                        time.sleep(300)
+                        await asyncio.sleep(300)
                         continue
 
                 elif crash_analysis['severity'] == "MODERATE":
@@ -404,23 +510,52 @@ class AITrader:
                 if time_since_strategic >= strategic_interval:
                     print(f"\n[STRATEGIC] Running 5-minute strategic analysis...")
 
-                    # Discover all active tokens
+                    # Discover active tokens and overlay detector signals
                     active_tokens = self.data_intel.discover_active_tokens(min_activity_hours=24)
+                    signal_candidates = self._collect_signal_candidates(limit=20)
+                    signal_lookup = {entry['token']: entry for entry in signal_candidates}
 
-                    if not active_tokens:
-                        print("[WARNING] No active tokens found for strategic analysis")
+                    if not active_tokens and not signal_candidates:
+                        print("[WARNING] No active tokens or signals found for strategic analysis")
                     else:
-                        print(f"[SCAN] Processing {len(active_tokens)} active tokens...")
+                        print(f"[SCAN] Signals: {len(signal_candidates)} | Active tokens: {len(active_tokens)}")
 
-                        # Get trending tokens for priority processing
                         trending = self.data_intel.get_trending_tokens(min_spike=2.0)
                         trending_tokens = [t['token'] for t in trending]
 
-                        # Process trending tokens first, then others
-                        priority_tokens = trending_tokens + [t for t in active_tokens if t not in trending_tokens]
+                        priority_tokens: List[str] = []
+                        priority_tokens.extend([entry['token'] for entry in signal_candidates])
+                        priority_tokens.extend([t for t in trending_tokens if t not in priority_tokens])
+                        priority_tokens.extend([t for t in active_tokens if t not in priority_tokens])
 
                         # Check circuit breakers
                         if not self.check_circuit_breakers():
+                            # Check DeFi TVL risk for position sizing
+                            defi_risk = self.data_intel.check_defi_risk()
+                            if defi_risk:
+                                self.defi_position_adjustment = defi_risk.get('position_adjustment', 1.0)
+                                risk_level = defi_risk.get('risk_level', 'UNKNOWN')
+                                if risk_level != 'UNKNOWN':
+                                    print(f"[DEFI RISK] {risk_level} - Position adjustment: {self.defi_position_adjustment:.0%}")
+                                    if risk_level == 'HIGH':
+                                        print("[DEFI RISK] Reducing all positions by 30-50% due to DeFi capital exodus")
+
+                            # Check Options Volatility risk for position sizing
+                            options_risk = self.data_intel.check_options_risk()
+                            if options_risk:
+                                self.options_position_adjustment = options_risk.get('position_adjustment', 1.0)
+                                vol_regime = options_risk.get('volatility_regime', 'UNKNOWN')
+                                if vol_regime != 'UNKNOWN':
+                                    btc_iv = options_risk.get('btc_iv', 0)
+                                    eth_iv = options_risk.get('eth_iv', 0)
+                                    print(f"[OPTIONS VOL] {vol_regime} - BTC IV: {btc_iv:.0f}%, ETH IV: {eth_iv:.0f}%")
+                                    print(f"[OPTIONS VOL] Position adjustment: {self.options_position_adjustment:.0%}")
+                                    if vol_regime == 'EXTREME':
+                                        print("[OPTIONS VOL] Extreme volatility detected - halving all position sizes")
+                                    warnings = options_risk.get('warnings', [])
+                                    for warning in warnings:
+                                        print(f"[OPTIONS VOL] Warning: {warning}")
+
                             # Start with deferred tactical alerts (70-84% confidence)
                             opportunities = deferred_alerts.copy()
                             if deferred_alerts:
@@ -443,8 +578,49 @@ class AITrader:
                                     if not self.data_intel.check_liquidity(token):
                                         continue
 
-                                    # Interesting enough for deeper analysis
-                                    signal = await self.analyze_token(token, summary)
+                                    # ==== NEW: Check data-driven signals BEFORE expensive AI ====
+                                    quick_signal = None
+                                    signal_source = None
+
+                                    # 1. Check order book for immediate opportunity
+                                    order_signal = self.check_order_book_opportunity(token)
+                                    if order_signal:
+                                        quick_signal = order_signal
+                                        signal_source = "ORDER_BOOK"
+
+                                    # 2. Check funding rate for mean reversion
+                                    if not quick_signal:
+                                        funding_signal = self.check_funding_rate_opportunity(token)
+                                        if funding_signal:
+                                            quick_signal = funding_signal
+                                            signal_source = "FUNDING_RATE"
+
+                                    # 3. Check exchange flows for whale movements
+                                    if not quick_signal:
+                                        flow_signal = self.check_exchange_flow_opportunity(token)
+                                        if flow_signal:
+                                            quick_signal = flow_signal
+                                            signal_source = "EXCHANGE_FLOW"
+
+                                    # If we found a data-driven signal, create quick decision
+                                    if quick_signal and signal_source:
+                                        print(f"[DATA SIGNAL] {token}: {quick_signal} from {signal_source}")
+                                        opportunities.append({
+                                            'token': token,
+                                            'action': quick_signal,
+                                            'confidence': 0.75,  # High confidence for data-driven signals
+                                            'position_size': 0.02,  # Conservative size
+                                            'stop_loss_pct': 0.03,
+                                            'take_profit_pct': 0.06,
+                                            'reasoning': f"Data-driven signal from {signal_source}",
+                                            'timestamp': datetime.now().isoformat(),
+                                            'source': signal_source.lower()
+                                        })
+                                        continue  # Skip expensive AI analysis
+
+                                    # No quick signal, proceed with AI analysis
+                                    signal_meta = signal_lookup.get(token)
+                                    signal = await self.analyze_token(token, summary, signal_meta)
                                     if signal and signal['action'] != 'HOLD':
                                         opportunities.append(signal)
 
@@ -470,7 +646,9 @@ class AITrader:
 
                     # Update last strategic analysis time
                     last_strategic_analysis = time.time()
-                    print(f"[STRATEGIC] Next strategic analysis in 5 minutes")
+                    next_minutes = strategic_interval / 60
+                    time_label = f"{next_minutes:.1f} minutes" if not next_minutes.is_integer() else f"{int(next_minutes)} minute{'s' if next_minutes != 1 else ''}"
+                    print(f"[STRATEGIC] Next strategic analysis in {time_label}")
 
                 # ===========================================================
                 # ALWAYS-ON MONITORING: Top tokens every 5 minutes
@@ -516,12 +694,23 @@ class AITrader:
                 if executed_trades > 0:
                     print(f"  🎯 Trades executed: {executed_trades}")
                 print(f"  Portfolio value: ${self.portfolio.get_total_value():,.2f}")
-                print(f"  Next tactical check: 1 minute")
+                next_tactical_minutes = tactical_check_interval / 60
+                if next_tactical_minutes < 1:
+                    tactical_label = f"{tactical_check_interval} seconds"
+                elif next_tactical_minutes.is_integer():
+                    tactical_label = f"{int(next_tactical_minutes)} minute{'s' if next_tactical_minutes != 1 else ''}"
+                else:
+                    tactical_label = f"{next_tactical_minutes:.1f} minutes"
+                print(f"  Next tactical check: {tactical_label}")
                 if time_since_strategic < strategic_interval:
                     mins_until_strategic = (strategic_interval - time_since_strategic) / 60
                     print(f"  Next strategic analysis: {mins_until_strategic:.1f} minutes")
 
-                # CRITICAL: Sleep only 2 minutes for tactical responsiveness!
+                # ADAPTIVE TIMING: Adjust intervals based on market volatility
+                tactical_check_interval = self.get_adaptive_check_interval(base_tactical_interval)
+                strategic_interval = self.get_adaptive_check_interval(base_strategic_interval)
+
+                # CRITICAL: Sleep strictly according to tactical cadence for responsiveness!
                 wait_time = max(1, tactical_check_interval - cycle_time)
                 print(f"\n[WAIT] Checking for alerts again in {wait_time:.0f} seconds...")
                 await asyncio.sleep(wait_time)
@@ -530,34 +719,27 @@ class AITrader:
                 print(f"[ERROR] Trading loop error: {e}")
                 await asyncio.sleep(60)
 
-    async def analyze_token(self, token: str, quick_summary: Dict) -> Optional[Dict]:
+    async def analyze_token(self, token: str, quick_summary: Dict, signal_meta: Optional[Dict] = None) -> Optional[Dict]:
         """
-        Analyze a token and generate trading signal
-        Uses Tier 1 Claude for initial decision
+        Analyze a token and generate a trading signal using the browser AI agent.
         """
         try:
-            # Build market context
-            context = await self.build_market_context(token, quick_summary)
+            if not self._token_data_is_fresh(token):
+                return None
 
-            # Generate Tier 1 decision with Claude
+            # Build market context
+            force_deep = signal_meta is not None
+            context = await self.build_market_context(token, quick_summary, force_deep=force_deep)
+            if signal_meta:
+                context['signal'] = signal_meta
+
+            # Generate decision with the browser-based Claude agent
             decision = await self.get_claude_decision(token, context)
 
             if not decision:
                 return None
 
-            # If BUY signal with high confidence, run Tier 2 verification
-            if (config.ENABLE_TIER2_VERIFICATION and
-                decision['action'] == 'BUY' and
-                decision['confidence'] >= config.TIER2_TRIGGER_CONFIDENCE):
-
-                print(f"[TIER 2] Verifying BUY signal for {token}...")
-                verified = await self.run_ensemble_verification(token, context, decision)
-
-                if not verified:
-                    print(f"[TIER 2] Ensemble rejected BUY for {token}")
-                    decision['action'] = 'HOLD'
-                    decision['reasoning'] += " (Ensemble verification failed)"
-
+            decision['market_context'] = context
             return decision
 
         except Exception as e:
@@ -588,7 +770,7 @@ class AITrader:
                 'token': token,
                 'action': 'HOLD',
                 'confidence': confidence / 100,  # Convert to decimal
-                'position_size': 0.03,  # Conservative size for tactical trades
+                'position_size': 0.03 * self.defi_position_adjustment * self.options_position_adjustment,  # Apply DeFi & Options risk adjustment
                 'stop_loss_pct': 0.05,  # Wider stop for volatile conditions
                 'take_profit_pct': 0.10,
                 'reasoning': f"TACTICAL ALERT: {alert['alert_type']} - {alert.get('signals', [])}",
@@ -630,10 +812,107 @@ class AITrader:
             print(f"[ERROR] Failed to process tactical alert: {e}")
             return ('IGNORED', None)
 
-    async def build_market_context(self, token: str, quick_summary: Dict) -> Dict:
+    def check_order_book_opportunity(self, token: str) -> Optional[str]:
+        """Check if order book shows immediate trading opportunity"""
+        try:
+            order_book = self.data_intel.get_order_book_intelligence(token)
+            if not order_book or not order_book.get('has_data'):
+                return None
+
+            pressure = order_book.get('pressure', {})
+            spread = order_book.get('spread', {})
+
+            # Strong buy signal from order book
+            if pressure.get('signal') == 'BUYERS_DOMINATING' and spread.get('quality') in ['EXCELLENT', 'GOOD']:
+                if pressure.get('imbalance', 0) > 0.3:  # Strong imbalance
+                    print(f"[ORDER BOOK] {token}: Strong BUY pressure detected (imbalance: {pressure['imbalance']:.2f})")
+                    return 'BUY'
+
+            # Strong sell signal from order book
+            elif pressure.get('signal') == 'SELLERS_DOMINATING' and spread.get('quality') in ['EXCELLENT', 'GOOD']:
+                if pressure.get('imbalance', 0) < -0.3:  # Strong negative imbalance
+                    print(f"[ORDER BOOK] {token}: Strong SELL pressure detected (imbalance: {pressure['imbalance']:.2f})")
+                    return 'SELL'
+
+            return None
+        except Exception as e:
+            print(f"[WARNING] Order book check failed for {token}: {e}")
+            return None
+
+    def check_funding_rate_opportunity(self, token: str) -> Optional[str]:
+        """Check for funding rate mean reversion opportunities"""
+        try:
+            funding_rate = self.data_intel.get_latest_funding_rate(token)
+            if funding_rate is None:
+                return None
+
+            # Extreme positive funding = overleveraged longs, likely to drop
+            if funding_rate > 0.001:  # 0.1% per 8h = 10%+ APR
+                print(f"[FUNDING] {token}: Extreme positive funding {funding_rate:.4f} - SHORT opportunity")
+                return 'SHORT'
+
+            # Extreme negative funding = overleveraged shorts, likely to bounce
+            elif funding_rate < -0.0005:  # -0.05% per 8h
+                print(f"[FUNDING] {token}: Extreme negative funding {funding_rate:.4f} - LONG opportunity")
+                return 'BUY'
+
+            return None
+        except Exception as e:
+            print(f"[WARNING] Funding rate check failed for {token}: {e}")
+            return None
+
+    def check_exchange_flow_opportunity(self, token: str) -> Optional[str]:
+        """Check if whale exchange flows suggest opportunity"""
+        try:
+            flows = self.data_intel.get_exchange_flow_signals(hours=6)
+            for flow in flows:
+                if flow['token'] != token:
+                    continue
+
+                # Large outflows = bullish (whales accumulating)
+                if flow['signal'] == 'BULLISH' and flow['strength'] > 0.7:
+                    print(f"[EXCHANGE FLOW] {token}: Large outflows detected ${flow['total_value']:,.0f} - BULLISH")
+                    return 'BUY'
+
+                # Large inflows = bearish (whales preparing to sell)
+                elif flow['signal'] == 'BEARISH' and flow['strength'] > 0.7:
+                    print(f"[EXCHANGE FLOW] {token}: Large inflows detected ${flow['total_value']:,.0f} - BEARISH")
+                    return 'SELL'
+
+            return None
+        except Exception as e:
+            print(f"[WARNING] Exchange flow check failed for {token}: {e}")
+            return None
+
+    def get_adaptive_check_interval(self, base_interval: int) -> int:
+        """Adjust check interval based on market volatility"""
+        try:
+            volatility = self.data_intel.get_market_volatility(hours=1)
+
+            # High volatility = check more often
+            if volatility > 0.03:  # 3% hourly volatility
+                adjusted = int(base_interval * 0.5)
+                print(f"[ADAPTIVE] High volatility ({volatility:.2%}) - checking every {adjusted}s")
+                return max(30, adjusted)  # Minimum 30 seconds
+
+            # Low volatility = check less often
+            elif volatility < 0.01:  # 1% hourly volatility
+                adjusted = int(base_interval * 1.5)
+                print(f"[ADAPTIVE] Low volatility ({volatility:.2%}) - checking every {adjusted}s")
+                return min(600, adjusted)  # Maximum 10 minutes
+
+            # Normal volatility
+            return base_interval
+
+        except Exception as e:
+            print(f"[WARNING] Failed to get adaptive interval: {e}")
+            return base_interval
+
+    async def build_market_context(self, token: str, quick_summary: Dict, force_deep: bool = False) -> Dict:
         """
-        Build comprehensive market context for AI decision
-        Starts with quick summary, adds deep data as needed
+        Build comprehensive market context for AI decision.
+        Starts with quick summary, then dynamically fetches deeper data layers based
+        on activity, liquidity, or forced analysis requests.
         """
         context = {
             'token': token,
@@ -641,35 +920,20 @@ class AITrader:
             'quick_summary': quick_summary
         }
 
-        # If token looks interesting (high activity or price movement), get deep data
-        if (quick_summary['tweets_1h'] > 20 or
-            abs(quick_summary['price_change_1h']) > 3 or
-            quick_summary['volume_spike'] > 2):
+        fetched_layers: List[str] = []
+        for layer in self.context_layers:
+            try:
+                if not layer['condition'](quick_summary, force_deep):
+                    continue
+                data = layer['fetcher'](token, quick_summary)
+                if data is not None:
+                    context[layer['name']] = data
+                    fetched_layers.append(layer['name'])
+            except Exception as exc:
+                print(f"[CONTEXT] Failed to load {layer['name']} for {token}: {exc}")
 
-            # Get detailed sentiment
-            context['sentiment'] = self.data_intel.get_sentiment_summary(token, hours=6)
-
-            # Get price history
-            context['price_data'] = self.data_intel.get_price_history(token, hours=24)
-
-            # Get market metrics
-            context['market_metrics'] = self.data_intel.get_market_metrics(token)
-
-            # Get order book intelligence for better entry/exit timing
-            context['order_book_intel'] = self.data_intel.get_order_book_intelligence(token)
-
-            # Add market-wide context
-            context['fear_greed'] = self.data_intel.get_fear_greed_index()
-
-            # Check for whale movements
-            whale_flows = self.data_intel.get_whale_movements(hours=3)
-            context['whale_activity'] = [w for w in whale_flows if w['token'] == token]
-
-            # CRITICAL: Check for liquidation cascades
-            context['liquidation_cascade'] = self.data_intel.get_liquidation_cascade_analysis(token)
-
-            # Find similar historical patterns for prediction
-            context['historical_patterns'] = self.data_intel.find_similar_historical_patterns(token, lookback_days=30)
+        if fetched_layers:
+            context['data_layers'] = fetched_layers
 
         # Add portfolio context
         context['portfolio'] = {
@@ -682,219 +946,616 @@ class AITrader:
 
         return context
 
-    async def get_claude_decision(self, token: str, context: Dict) -> Optional[Dict]:
-        """Generate trading decision using Browser AI or API fallback"""
-        try:
-            # Use browser AI if enabled (avoids API costs)
-            if config.USE_BROWSER_AI:
-                provider = getattr(config, 'BROWSER_AI_PROVIDER', 'claude')
-                browser_ai = get_browser_ai(provider)
+    def _maybe_reset_daily_stats(self, now: Optional[datetime] = None) -> None:
+        """Reset daily trade counters when the calendar day changes."""
+        now = now or datetime.now()
+        current_date = now.date()
+        if current_date != self._last_daily_reset:
+            self.daily_trade_count = 0
+            self.daily_pnl = 0
+            self._last_daily_reset = current_date
+            print(f"[RESET] Daily trading stats reset for {current_date.isoformat()}")
 
-                # Get decision from browser
-                decision = browser_ai.get_trading_decision(token, context)
+    def _global_data_is_fresh(self) -> bool:
+        """
+        Ensure critical feeds are being updated frequently enough.
+        """
+        if not self.feed_freshness_limits:
+            return True
 
-                if decision:
-                    print(f"[BROWSER AI] Got decision from {browser_ai.provider}")
-                    return decision
-                else:
-                    print(f"[BROWSER AI] Failed, falling back to API")
-                    # Fall through to API method
+        freshness = self.data_intel.get_feed_freshness(self.feed_freshness_limits.keys())
+        stale = []
+        for feed, limit in self.feed_freshness_limits.items():
+            age = freshness.get(feed)
+            if age is None:
+                stale.append(f"{feed}: missing")
+            elif age > limit:
+                stale.append(f"{feed}: {age:.1f}m (limit {limit}m)")
 
-            # Original API method (fallback)
-            # Apply learned adjustments from Trade Learner
-            learned_adjustment = self.trade_learner.get_learned_adjustment(
-                token=token,
-                market_context=context
+        if stale:
+            message = "; ".join(stale)
+            if message != self._last_freshness_warning:
+                print(f"[DATA GUARD] Waiting for fresh data – {message}")
+                self._last_freshness_warning = message
+            return False
+
+        self._last_freshness_warning = None
+        return True
+
+    def _token_data_is_fresh(self, token: str) -> bool:
+        """
+        Ensure per-token feeds are recent enough before executing a trade.
+        """
+        limits: Dict[str, int] = {}
+        # Apply stricter per-token limits where applicable
+        limits['crypto_ohlcv'] = min(
+            self.price_data_max_age,
+            self.feed_freshness_limits.get('crypto_ohlcv', self.price_data_max_age)
+        )
+        limits['twitter_sentiment'] = min(
+            self.sentiment_data_max_age,
+            self.feed_freshness_limits.get('twitter_sentiment', self.sentiment_data_max_age)
+        )
+        # Include any other global limits that are token-specific
+        for feed in ['order_book_depth', 'liquidations', 'open_interest']:
+            if feed in self.feed_freshness_limits:
+                limits[feed] = self.feed_freshness_limits[feed]
+
+        ages = self.data_intel.get_token_freshness(token, limits)
+        stale = []
+        for feed, limit in limits.items():
+            age = ages.get(feed)
+            if age is None:
+                stale.append(f"{feed}: missing")
+            elif age > limit:
+                stale.append(f"{feed}: {age:.1f}m (limit {limit}m)")
+
+        if stale:
+            print(f"[DATA GUARD] Skipping {token} – {'; '.join(stale)}")
+            return False
+        return True
+
+    def _symbol_is_tradeable(self, token: str) -> bool:
+        """
+        Binance-only eligibility check; cached to reduce API calls.
+        """
+        if token in self._symbol_check_cache:
+            return self._symbol_check_cache[token]
+
+        if not self.trading_interface:
+            # If no live interface, allow simulation but log once
+            self._symbol_check_cache[token] = True
+            return True
+
+        ok = self.trading_interface.is_symbol_tradeable(token)
+        self._symbol_check_cache[token] = ok
+        return ok
+
+    def _define_context_layers(self) -> List[Dict[str, Any]]:
+        """Describe optional data layers for market context construction."""
+        def high_activity(quick: Dict[str, Any]) -> bool:
+            return (
+                quick.get('tweets_1h', 0) > 20
+                or abs(quick.get('price_change_1h', 0) or 0) > 3
+                or quick.get('volume_spike', 0) > 2
             )
 
-            if learned_adjustment['should_adjust']:
-                print(f"[LEARNING] Applying adjustments for {token}:")
-                print(f"  Confidence modifier: {learned_adjustment['confidence_modifier']:+.2f}")
-                print(f"  Position size modifier: {learned_adjustment['position_size_modifier']:.2f}x")
-                print(f"  Pattern detected: {learned_adjustment.get('pattern_type', 'None')}")
-                if learned_adjustment.get('recommendation'):
-                    print(f"  Recommendation: {learned_adjustment['recommendation']}")
+        return [
+            {
+                'name': 'sentiment',
+                'condition': lambda quick, force: force or quick.get('tweets_1h', 0) > 0,
+                'fetcher': lambda token, quick: self.data_intel.get_sentiment_summary(token, hours=6),
+            },
+            {
+                'name': 'price_data',
+                'condition': lambda quick, force: force or abs(quick.get('price_change_1h', 0) or 0) >= 1
+                    or quick.get('volume_spike', 0) >= 1.5,
+                'fetcher': lambda token, quick: self.data_intel.get_price_history(token, hours=24),
+            },
+            {
+                'name': 'market_metrics',
+                'condition': lambda quick, force: force or abs(quick.get('price_change_1h', 0) or 0) >= 0.3,
+                'fetcher': lambda token, quick: self.data_intel.get_market_metrics(token),
+            },
+            {
+                'name': 'order_book_intel',
+                'condition': lambda quick, force: True,
+                'fetcher': lambda token, quick: self.data_intel.get_order_book_intelligence(token),
+            },
+            {
+                'name': 'fear_greed',
+                'condition': lambda quick, force: True,
+                'fetcher': lambda token, quick: self.data_intel.get_fear_greed_index(),
+            },
+            {
+                'name': 'whale_activity',
+                'condition': lambda quick, force: force or quick.get('tweets_1h', 0) > 5,
+                'fetcher': lambda token, quick: self._fetch_whale_activity(token),
+            },
+            {
+                'name': 'liquidation_cascade',
+                'condition': lambda quick, force: force or abs(quick.get('price_change_1h', 0) or 0) >= 2,
+                'fetcher': lambda token, quick: self.data_intel.get_liquidation_cascade_analysis(token),
+            },
+            {
+                'name': 'historical_patterns',
+                'condition': lambda quick, force: force or high_activity(quick),
+                'fetcher': lambda token, quick: self.data_intel.find_similar_historical_patterns(token, lookback_days=30),
+            },
+            {
+                'name': 'stablecoin_metrics',
+                'condition': lambda quick, force: True,
+                'fetcher': lambda token, quick: self.data_intel.get_stablecoin_metrics(),
+            },
+            {
+                'name': 'smart_money_flows',
+                'condition': lambda quick, force: force or quick.get('volume_spike', 0) >= 1.8,
+                'fetcher': lambda token, quick: self.data_intel.get_smart_money_flows(token, hours=6),
+            },
+            {
+                'name': 'dex_metrics',
+                'condition': lambda quick, force: force or quick.get('volume_spike', 0) >= 1.2,
+                'fetcher': lambda token, quick: self.data_intel.get_dex_liquidity_metrics(token),
+            },
+            {
+                'name': 'volume_profile',
+                'condition': lambda quick, force: force or quick.get('volume_spike', 0) >= 1.0,
+                'fetcher': lambda token, quick: self.data_intel.get_volume_profile(token, hours=24),
+            },
+            {
+                'name': 'defi_risk',
+                'condition': lambda quick, force: True,  # Always include DeFi risk
+                'fetcher': lambda token, quick: self.data_intel.check_defi_risk(),
+            },
+            {
+                'name': 'options_volatility',
+                'condition': lambda quick, force: True,  # Always include options vol
+                'fetcher': lambda token, quick: self.data_intel.check_options_risk(),
+            },
+            {
+                'name': 'macro_intelligence',
+                'condition': lambda quick, force: True,  # Always check macro context
+                'fetcher': lambda token, quick: self.macro_intel.get_crypto_macro_context(),
+            },
+            {
+                'name': 'bridge_flows',
+                'condition': lambda quick, force: True,  # Always check L2 rotation
+                'fetcher': lambda token, quick: self.data_intel.check_l2_rotation(token),
+            },
+        ]
 
-            # Build prompt
-            prompt = f"""
-Analyze this cryptocurrency opportunity and provide a trading decision.
+    def _fetch_whale_activity(self, token: str) -> List[Dict[str, Any]]:
+        whale_flows = self.data_intel.get_whale_movements(hours=3) or []
+        return [w for w in whale_flows if w.get('token') == token]
 
-TOKEN: {token}
-CURRENT PRICE: ${context['quick_summary']['price']:.4f}
-TIMESTAMP: {context['timestamp']}
+    def _token_data_is_fresh(self, token: str) -> bool:
+        """
+        Ensure we only analyze tokens with recently updated DB records.
+        """
+        freshness = self.data_intel.get_token_data_freshness(token) or {}
+        stale_reasons = []
 
-QUICK METRICS:
-- Tweets (1h): {context['quick_summary']['tweets_1h']}
-- Sentiment (1h): {context['quick_summary']['sentiment_1h']:.3f}
-- Price Change (1h): {context['quick_summary']['price_change_1h']:.2f}%
-- Volume Spike: {context['quick_summary']['volume_spike']:.1f}x
-
-"""
-            # Add detailed data if available
-            if 'sentiment' in context:
-                prompt += f"""
-SENTIMENT DETAILS (6h):
-- Total Tweets: {context['sentiment']['tweet_count']}
-- Avg Sentiment: {context['sentiment']['avg_sentiment']:.3f}
-- Whale Tweets: {context['sentiment']['whale_tweets']}
-- Quality Tweets: {context['sentiment']['quality_tweets']}
-- Momentum Score: {context['sentiment']['momentum_score']:.3f}
-"""
-
-            if 'price_data' in context:
-                prompt += f"""
-PRICE ACTION (24h):
-- 24h Change: {context['price_data']['price_change_24h']:.2f}%
-- 24h High: ${context['price_data']['high_24h']:.4f}
-- 24h Low: ${context['price_data']['low_24h']:.4f}
-- Volatility: {context['price_data']['volatility']:.2f}%
-"""
-
-            if 'market_metrics' in context:
-                if 'order_book' in context['market_metrics']:
-                    prompt += f"""
-ORDER BOOK:
-- Spread: {context['market_metrics']['order_book']['spread']:.4f}
-- Imbalance: {context['market_metrics']['order_book']['imbalance']:.2f}
-"""
-                if 'funding_rate' in context['market_metrics']:
-                    prompt += f"""
-FUNDING: {context['market_metrics']['funding_rate']:.4f}%
-"""
-
-            # Add order book intelligence
-            if 'order_book_intel' in context and context['order_book_intel']['has_data']:
-                book = context['order_book_intel']
-                prompt += f"""
-ORDER BOOK INTELLIGENCE:
-- Entry Quality: {book['entry_quality']} (Score: {book.get('entry_score', 0)}/100)
-- Recommendation: {book['recommendation']}
-- Spread: {book['spread']['quality']} ({book['spread']['percentage']:.3f}%)
-- Buy Liquidity: {book['liquidity']['buy_quality']} (Est. Slippage: {book['liquidity']['estimated_buy_slippage']}%)
-- Sell Liquidity: {book['liquidity']['sell_quality']} (Est. Slippage: {book['liquidity']['estimated_sell_slippage']}%)
-- Order Pressure: {book['pressure']['direction']} ({book['pressure']['signal']})
-- Walls Detected: {', '.join(book['walls'])}
-- Analysis: {book['reasoning']}
-- Trading Advice: {' | '.join(book['trading_advice'])}
-"""
-
-            # Add liquidation cascade analysis
-            if 'liquidation_cascade' in context:
-                liq = context['liquidation_cascade']
-                prompt += f"""
-LIQUIDATION CASCADE ANALYSIS:
-- Risk Score: {liq['risk_score']}/100
-- Type: {liq['cascade_type']}
-- Velocity: {liq['velocity']} liquidations/min
-- Total Liquidated (1h): ${liq['total_liquidated_1h']:,.0f}
-- Longs Liquidated: ${liq['long_liquidated']:,.0f}
-- Shorts Liquidated: ${liq['short_liquidated']:,.0f}
-- Recommendation: {liq['recommendation']}
-- Confidence: {liq['confidence']}%
-- Analysis: {liq['reasoning']}
-"""
-
-            # Add historical pattern analysis
-            if 'historical_patterns' in context and context['historical_patterns']['has_patterns']:
-                patterns = context['historical_patterns']
-                stats = patterns['historical_stats']
-                prompt += f"""
-HISTORICAL PATTERN ANALYSIS:
-- Similar Patterns Found: {patterns['pattern_count']} (Similarity: {patterns.get('similarity_score', 0)}%)
-- Prediction: {patterns['prediction']} (Confidence: {patterns['confidence']})
-- Signal: {patterns['signal']}
-- Average 24h Outcome: {stats['avg_outcome_24h']:+.1f}%
-- Win Rate: {stats['win_rate']}%
-- Risk/Reward Ratio: {stats['risk_reward_ratio']}:1
-- Best Historical Outcome: {stats['best_outcome']:+.1f}%
-- Worst Historical Outcome: {stats['worst_outcome']:+.1f}%
-- Analysis: {patterns['reasoning']}
-"""
-
-            # Add portfolio context
-            prompt += f"""
-PORTFOLIO:
-- Available Cash: ${context['portfolio']['cash_available']:,.2f}
-- Open Positions: {context['portfolio']['open_position_count']}
-- Daily P&L: ${context['portfolio']['daily_pnl']:.2f}
-
-Provide your trading decision in the specified XML format.
-"""
-
-            # Get optimized prompt from AI Optimizer
-            market_conditions = {
-                'btc_change': context.get('price_data', {}).get('price_change_24h', 0) if 'price_data' in context else 0,
-                'atr': self.portfolio.calculate_volatility(token, hours=24),
-                'liquidation_velocity': context.get('liquidation_cascade', {}).get('velocity', 0) if 'liquidation_cascade' in context else 0,
-                'liquidation_total': context.get('liquidation_cascade', {}).get('total_liquidated_1h', 0) if 'liquidation_cascade' in context else 0,
-                'cascade_type': context.get('liquidation_cascade', {}).get('cascade_type', 'NONE') if 'liquidation_cascade' in context else 'NONE',
-                'spread': context.get('order_book_intel', {}).get('spread', {}).get('percentage', 0.1) if 'order_book_intel' in context else 0.1,
-                'sentiment': context.get('sentiment', {}).get('avg_sentiment', 0) if 'sentiment' in context else 0,
-                'tweet_volume_spike': context.get('quick_summary', {}).get('volume_spike', 1),
-                'crash_probability': 0  # Will be set if crash analysis available
-            }
-
-            # Add crash probability if we have it
-            crash_analysis = self.data_intel.detect_market_crash_multi_indicator()
-            market_conditions['crash_probability'] = crash_analysis.get('probability', 0)
-
-            # Get optimized prompt
-            optimized_prompt = self.ai_optimizer.get_optimal_prompt(token, market_conditions, prompt)
-
-            # Call Claude with optimized prompt
-            response = self.claude_client.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=config.CLAUDE_MAX_TOKENS,
-                temperature=config.CLAUDE_TEMPERATURE,
-                system=config.SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": optimized_prompt}]
+        price_age = freshness.get('price_minutes')
+        if price_age is None:
+            stale_reasons.append("missing price data")
+        elif price_age > self.price_data_max_age:
+            stale_reasons.append(
+                f"price data {price_age:.1f}m old (> {self.price_data_max_age}m)"
             )
 
-            # Parse response
-            decision = self.parse_claude_response(response.content[0].text, token)
+        sentiment_age = freshness.get('sentiment_minutes')
+        if sentiment_age is None:
+            stale_reasons.append("missing sentiment data")
+        elif sentiment_age > self.sentiment_data_max_age:
+            stale_reasons.append(
+                f"sentiment data {sentiment_age:.1f}m old (> {self.sentiment_data_max_age}m)"
+            )
 
-            if decision and learned_adjustment['should_adjust']:
-                # Apply learned adjustments to the decision
-                original_confidence = decision['confidence']
-                original_size = decision['position_size']
+        if stale_reasons:
+            reasons = "; ".join(stale_reasons)
+            print(f"[DATA GUARD] Skipping {token}: {reasons}")
+            return False
 
-                # Adjust confidence
-                decision['confidence'] = max(0.0, min(1.0,
-                    decision['confidence'] + learned_adjustment['confidence_modifier']))
+        return True
 
-                # Adjust position size
-                decision['position_size'] = max(0.01, min(0.05,
-                    decision['position_size'] * learned_adjustment['position_size_modifier']))
+    def _collect_signal_candidates(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Retrieve prioritized signals from data intelligence, ensuring unique tokens.
+        """
+        signals = self.data_intel.get_signal_candidates(limit=limit) or []
+        seen = set()
+        ordered: List[Dict[str, Any]] = []
+        for entry in signals:
+            token = entry.get('token')
+            if not token or token in seen:
+                continue
+            ordered.append(entry)
+            seen.add(token)
+        return ordered
 
-                # Add learning context to reasoning
-                if learned_adjustment.get('pattern_type'):
-                    decision['reasoning'] += f" | LEARNED: {learned_adjustment['pattern_type']} pattern detected"
+    def _get_browser_orchestrator(self):
+        if self.browser_orchestrator:
+            return self.browser_orchestrator
 
-                # Override action if learner strongly recommends it
-                if learned_adjustment.get('override_action'):
-                    print(f"[LEARNING] Overriding action from {decision['action']} to {learned_adjustment['override_action']}")
-                    decision['action'] = learned_adjustment['override_action']
-                    decision['reasoning'] += f" | OVERRIDE: {learned_adjustment.get('override_reason', '')}"
+        provider = getattr(config, 'BROWSER_AI_PROVIDER', 'claude')
+        session_dir = getattr(config, 'BROWSER_SESSION_DIR', None)
+        priming_prompt = getattr(
+            config,
+            'BROWSER_AGENT_PRIMING_PROMPT',
+            BROWSER_AGENT_PRIMING_PROMPT
+        )
 
-                if original_confidence != decision['confidence'] or original_size != decision['position_size']:
-                    print(f"[LEARNING] Adjusted: Confidence {original_confidence:.2f} -> {decision['confidence']:.2f}, Size {original_size:.2f} -> {decision['position_size']:.2f}")
+        self.browser_orchestrator = build_data_orchestrator(
+            data_intelligence=self.data_intel,
+            provider=provider,
+            priming_prompt=priming_prompt,
+            session_dir=session_dir
+        )
+        return self.browser_orchestrator
 
-            if decision:
-                print(f"[TIER 1] {token}: {decision['action']} (confidence: {decision['confidence']:.2f})")
-
-                # Track decision for performance optimization
-                self.ai_optimizer.track_decision(
-                    model='claude',
-                    token=token,
-                    decision=decision,
-                    outcome=None  # Will be updated when position closes
-                )
-
-            return decision
-
-        except Exception as e:
-            print(f"[ERROR] Claude decision failed for {token}: {e}")
+    def _build_browser_initial_prompt(self, token: str, context: Dict) -> Optional[str]:
+        quick = context.get('quick_summary') or self.data_intel.get_quick_summary(token)
+        if not quick:
             return None
+
+        def pct(value: Optional[float], digits: int = 2) -> str:
+            if value is None:
+                return "n/a"
+            return f"{value:+.{digits}f}%"
+
+        def fmt(value: Optional[float]) -> str:
+            if value is None:
+                return "n/a"
+            return f"{value:,.2f}"
+
+        sections: List[str] = []
+
+        signal = context.get('signal')
+        if signal:
+            payload = signal.get('payload', {})
+            reasons = ", ".join(signal.get('reasons', [])) or "detector"
+            sections.append(
+                "SIGNAL SUMMARY:\n"
+                f"- Token: {token}\n"
+                f"- Reasons: {reasons}\n"
+                f"- Detector confidence: {signal.get('confidence', 0):.2f}\n"
+                f"- Payload: {json.dumps(payload, default=str)[:800]}"
+            )
+
+        regime = self.current_regime.get('regime') if self.current_regime else 'UNKNOWN'
+        strategy = self.current_regime.get('recommended_strategy') if self.current_regime else ''
+        sections.append(
+            "MARKET SNAPSHOT:\n"
+            f"- Price: ${quick.get('price', 0):,.2f}\n"
+            f"- 1h Change: {pct(quick.get('price_change_1h'))}\n"
+            f"- Tweets (1h): {quick.get('tweets_1h', 0)}\n"
+            f"- Sentiment (1h): {quick.get('sentiment_1h', 0):+.3f}\n"
+            f"- Volume spike: {quick.get('volume_spike', 0):.2f}x\n"
+            f"- Regime: {regime} {('('+strategy+')') if strategy else ''}"
+        )
+
+        price_data = context.get('price_data')
+        if price_data and price_data.get('has_data'):
+            sections.append(
+                "PRICE ACTION (24H):\n"
+                f"- Change: {pct(price_data.get('price_change_24h'))}\n"
+                f"- Range: ${price_data.get('low_24h', 0):,.2f} → ${price_data.get('high_24h', 0):,.2f}\n"
+                f"- Volatility: {pct(price_data.get('volatility'))}\n"
+                f"- Volume: {fmt(price_data.get('volume_24h'))}"
+            )
+
+        volume_profile = context.get('volume_profile')
+        if volume_profile and volume_profile.get('has_data'):
+            sections.append(
+                "VOLUME PROFILE:\n"
+                f"- Total ({volume_profile.get('window_hours')}h): {fmt(volume_profile.get('total_volume'))}\n"
+                f"- Recent avg ({volume_profile.get('recent_window_hours')}h): "
+                f"{fmt(volume_profile.get('recent_avg_volume'))} "
+                f"({volume_profile.get('volume_ratio', 1):.2f}x baseline)"
+            )
+
+        sentiment = context.get('sentiment')
+        if sentiment and sentiment.get('has_data', True):
+            sections.append(
+                "SENTIMENT (6H):\n"
+                f"- Tweets: {sentiment.get('tweet_count', 0)}\n"
+                f"- Avg: {sentiment.get('avg_sentiment', 0):+.3f} "
+                f"(weighted {sentiment.get('avg_weighted', 0):+.3f})\n"
+                f"- Whale tweets: {sentiment.get('whale_tweets', 0)}\n"
+                f"- Momentum: {sentiment.get('momentum_score', 0):+.3f}"
+            )
+
+        order_book = context.get('order_book_intel')
+        if order_book and order_book.get('has_data'):
+            spread = order_book.get('spread', {}).get('percentage')
+            pressure = order_book.get('pressure', {})
+            sections.append(
+                "ORDER BOOK:\n"
+                f"- Spread: {spread if spread is not None else 'n/a'}%\n"
+                f"- Recommendation: {order_book.get('recommendation')}\n"
+                f"- Pressure: {pressure.get('direction')} ({pressure.get('signal')})"
+            )
+
+        smart_money = context.get('smart_money_flows') or []
+        if smart_money:
+            flows = smart_money[:3]
+            flow_lines = [
+                f"    • {flow.get('source', 'exchange')} {flow.get('direction', '')} ${flow.get('notional_usd', 0):,.0f}"
+                for flow in flows
+            ]
+            sections.append("SMART MONEY FLOWS:\n" + "\n".join(flow_lines))
+
+        whale_activity = context.get('whale_activity') or []
+        if whale_activity:
+            whales = whale_activity[:3]
+            whale_lines = [
+                f"    • {w.get('address', 'wallet')} {w.get('action', '')} {w.get('size', 'n/a')}"
+                for w in whales
+            ]
+            sections.append("WHALE ACTIVITY:\n" + "\n".join(whale_lines))
+
+        liquidation = context.get('liquidation_cascade')
+        if liquidation:
+            sections.append(
+                "LIQUIDATION RISK:\n"
+                f"- Status: {liquidation.get('status', 'n/a')}\n"
+                f"- Score: {liquidation.get('risk_score', 'n/a')}\n"
+                f"- Recommendation: {liquidation.get('recommendation', 'n/a')}"
+            )
+
+        portfolio = context.get('portfolio', {})
+        positions = portfolio.get('current_positions', {})
+        exposure_summary = ", ".join(
+            f"{sym}:{pos.get('position_value', 0):,.0f}"
+            for sym, pos in list(positions.items())[:5]
+        ) or "none"
+        sections.append(
+            "PORTFOLIO:\n"
+            f"- Cash: ${portfolio.get('cash_available', 0):,.0f}\n"
+            f"- Total value: ${portfolio.get('total_value', 0):,.0f}\n"
+            f"- Open positions: {len(positions)} ({exposure_summary})"
+        )
+
+        return "\n\n".join(sections)
+
+    def _get_browser_verifier(self):
+        if self.browser_verifier:
+            return self.browser_verifier
+
+        provider = getattr(
+            config,
+            'BROWSER_VERIFIER_PROVIDER',
+            getattr(config, 'BROWSER_AI_PROVIDER', 'claude')
+        )
+        session_dir = getattr(
+            config,
+            'BROWSER_VERIFIER_SESSION_DIR',
+            getattr(config, 'BROWSER_SESSION_DIR', None)
+        )
+        priming_prompt = getattr(
+            config,
+            'BROWSER_VERIFIER_PRIMING_PROMPT',
+            BROWSER_VERIFIER_PROMPT
+        )
+
+        self.browser_verifier = build_verification_orchestrator(
+            data_intelligence=self.data_intel,
+            provider=provider,
+            priming_prompt=priming_prompt,
+            session_dir=session_dir
+        )
+        return self.browser_verifier
+
+    def _build_verifier_initial_prompt(self, token: str, decision: Dict, context: Optional[Dict]) -> str:
+        quick = None
+        if context and 'quick_summary' in context:
+            quick = context['quick_summary']
+        if not quick:
+            quick = self.data_intel.get_quick_summary(token) or {}
+
+        exposures = []
+        for sym, pos in self.portfolio.positions.items():
+            exposures.append(
+                f"{sym}: ${pos['position_value']:.2f} ({pos.get('position_type', 'LONG')})"
+            )
+
+        lines = [
+            "DECISION SUMMARY:",
+            f"- Token: {token}",
+            f"- Action: {decision['action']}",
+            f"- Confidence: {decision['confidence']:.2f}",
+            f"- Position Size: {decision['position_size']*100:.2f}%",
+            f"- Stop Loss: {decision['stop_loss_pct']:.2f}%",
+            f"- Take Profit: {decision['take_profit_pct']:.2f}%",
+            f"- Reasoning: {decision['reasoning']}",
+            "",
+            "MARKET SNAPSHOT:",
+            f"- Price: ${quick.get('price', 0):,.4f}",
+            f"- 1h Change: {quick.get('price_change_1h', 0):+.2f}%",
+            f"- Sentiment(1h): {quick.get('sentiment_1h', 0):+.3f}",
+            f"- Volume Spike: {quick.get('volume_spike', 0):.2f}x",
+            "",
+            "PORTFOLIO EXPOSURE:",
+            f"- Open positions: {len(exposures)}",
+            f"- Details: {', '.join(exposures) if exposures else 'None'}",
+            f"- Cash Available: ${self.portfolio.get_available_cash():,.2f}",
+        ]
+
+        return "\n".join(lines)
+
+    def verify_browser_decision(self, token: str, decision: Dict, context: Optional[Dict]) -> bool:
+        if not getattr(config, 'ENABLE_BROWSER_VERIFIER', True):
+            return True
+
+        min_conf = getattr(config, 'BROWSER_VERIFIER_MIN_CONFIDENCE', 0.7)
+        if decision.get('confidence', 0) < min_conf:
+            return True
+
+        try:
+            orchestrator = self._get_browser_verifier()
+            prompt = self._build_verifier_initial_prompt(token, decision, context)
+            result = orchestrator.run(initial_prompt=prompt)
+        except Exception as e:
+            print(f"[VERIFIER] Error running browser verifier: {e}")
+            return False
+
+        completion = result.completion
+        if not completion:
+            print("[VERIFIER] No verdict returned; blocking trade.")
+            return False
+
+        params = {k.lower(): v for k, v in completion.params.items()}
+        status = params.get('status', '').upper() or completion.name.upper()
+        reason = params.get('reason') or completion.raw
+
+        decision['verifier'] = {
+            'status': status,
+            'reason': reason,
+            'transcript': result.transcript
+        }
+
+        if status != 'PASS':
+            print(f"[VERIFIER] {token} blocked: {reason}")
+            return False
+
+        print(f"[VERIFIER] {token} approved: {reason}")
+        return True
+
+    def get_browser_agent_decision(self, token: str, context: Dict) -> Optional[Dict]:
+        try:
+            orchestrator = self._get_browser_orchestrator()
+            initial_prompt = self._build_browser_initial_prompt(token, context)
+            if not initial_prompt:
+                print(f"[BROWSER AGENT] No quick summary available for {token}")
+                return None
+
+            result = orchestrator.run(initial_prompt=initial_prompt)
+        except Exception as e:
+            print(f"[BROWSER AGENT] Error running browser orchestrator: {e}")
+            return None
+
+        completion = result.completion
+        if not completion:
+            print(f"[BROWSER AGENT] No completion command returned for {token}")
+            return None
+
+        params = {k.lower(): v for k, v in completion.params.items()}
+        action = params.get('action')
+        if not action:
+            print(f"[BROWSER AGENT] Missing action in completion for {token}")
+            return None
+        action = action.upper()
+
+        def _safe_float(value: Optional[str], default: float) -> float:
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
+        confidence = _safe_float(params.get('confidence'), 0.6)
+        confidence = max(0.0, min(1.0, confidence))
+
+        size_default = min(0.02, config.MAX_POSITION_SIZE_PCT / 100)
+        size_value = params.get('size') or params.get('size_pct') or params.get('position_size')
+        position_size = _safe_float(size_value, size_default)
+        if position_size > 1:
+            position_size /= 100
+
+        # Apply DeFi and Options risk adjustments to position size
+        position_size = position_size * self.defi_position_adjustment * self.options_position_adjustment
+
+        stop_value = params.get('stop') or params.get('stop_loss')
+        stop_loss_pct = _safe_float(stop_value, config.DEFAULT_STOP_LOSS_PCT)
+
+        take_value = params.get('take') or params.get('take_profit')
+        take_profit_pct = _safe_float(take_value, config.DEFAULT_TAKE_PROFIT_PCT)
+
+        reasoning = params.get('reasoning') or completion.raw
+
+        decision = {
+            'token': token,
+            'action': action,
+            'confidence': confidence,
+            'position_size': position_size,
+            'stop_loss_pct': stop_loss_pct,
+            'take_profit_pct': take_profit_pct,
+            'reasoning': reasoning,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'browser_agent',
+            'browser_transcript': result.transcript
+        }
+        self._log_browser_decision(decision)
+        return decision
+
+    def _log_browser_decision(self, decision: Dict) -> None:
+        try:
+            self.browser_logger.log(decision)
+        except Exception as e:
+            print(f"[BROWSER AGENT] Failed to log decision: {e}")
+
+    async def get_claude_decision(self, token: str, context: Dict) -> Optional[Dict]:
+        """Generate trading decision using the browser-based agent only."""
+        decision = None
+        try:
+            if config.USE_BROWSER_AI:
+                decision = self.get_browser_agent_decision(token, context)
+            else:
+                print("[BROWSER AGENT] Browser AI disabled in config; cannot create decision.")
+        except Exception as e:
+            print(f"[BROWSER AGENT] Error retrieving decision: {e}")
+            decision = None
+
+        if not decision:
+            print(f"[BROWSER AGENT] No decision returned for {token}")
+            return None
+
+        # Apply learned adjustments from Trade Learner
+        learned_adjustment = self.trade_learner.get_learned_adjustment(
+            token=token,
+            market_context=context
+        )
+
+        if learned_adjustment['should_adjust']:
+            print(f"[LEARNING] Applying adjustments for {token}:")
+            print(f"  Confidence modifier: {learned_adjustment['confidence_modifier']:+.2f}")
+            print(f"  Position size modifier: {learned_adjustment['position_size_modifier']:.2f}x")
+            print(f"  Pattern detected: {learned_adjustment.get('pattern_type', 'None')}")
+            if learned_adjustment.get('recommendation'):
+                print(f"  Recommendation: {learned_adjustment['recommendation']}")
+
+            original_confidence = decision['confidence']
+            original_size = decision['position_size']
+
+            decision['confidence'] = max(0.0, min(1.0,
+                decision['confidence'] + learned_adjustment['confidence_modifier']))
+
+            decision['position_size'] = max(0.01, min(0.05,
+                decision['position_size'] * learned_adjustment['position_size_modifier']))
+
+            if learned_adjustment.get('pattern_type'):
+                decision['reasoning'] += f" | LEARNED: {learned_adjustment['pattern_type']} pattern detected"
+
+            if learned_adjustment.get('override_action'):
+                print(f"[LEARNING] Overriding action from {decision['action']} to {learned_adjustment['override_action']}")
+                decision['action'] = learned_adjustment['override_action']
+                decision['reasoning'] += f" | OVERRIDE: {learned_adjustment.get('override_reason', '')}"
+
+            if original_confidence != decision['confidence'] or original_size != decision['position_size']:
+                print(f"[LEARNING] Adjusted: Confidence {original_confidence:.2f} -> {decision['confidence']:.2f}, Size {original_size:.2f} -> {decision['position_size']:.2f}")
+
+        print(f"[AI DECISION] {token}: {decision['action']} (confidence: {decision['confidence']:.2f})")
+
+        model_name = decision.get('source', 'browser_agent')
+        self.ai_optimizer.track_decision(
+            model=model_name,
+            token=token,
+            decision=decision,
+            outcome=None  # Will be updated when position closes
+        )
+
+        return decision
 
     def parse_claude_response(self, response_text: str, token: str) -> Optional[Dict]:
         """Parse Claude's enhanced XML response with analysis and scores"""
@@ -968,10 +1629,10 @@ Provide your trading decision in the specified XML format.
             }
 
             # Apply dynamic confidence threshold based on market regime
-            min_confidence = config.MIN_TIER1_CONFIDENCE
+            min_confidence = config.MIN_DECISION_CONFIDENCE
             if self.current_regime:
                 regime_thresholds = self.current_regime.get('thresholds', {})
-                min_confidence = regime_thresholds.get('entry_confidence', config.MIN_TIER1_CONFIDENCE)
+                min_confidence = regime_thresholds.get('entry_confidence', config.MIN_DECISION_CONFIDENCE)
 
                 # Apply regime-specific adjustments
                 if 'position_size_multiplier' in regime_thresholds:
@@ -992,130 +1653,6 @@ Provide your trading decision in the specified XML format.
             print(f"[ERROR] Failed to parse Claude response: {e}")
             return None
 
-    async def run_ensemble_verification(self, token: str, context: Dict, tier1_decision: Dict) -> bool:
-        """
-        Run Tier 2 ensemble verification for high-stakes BUY decisions
-        Returns True if ensemble agrees with BUY
-        """
-        if not self.ensemble_clients:
-            return True  # Skip if ensemble not configured
-
-        votes = {}
-
-        # Prepare verification prompt
-        prompt = f"""
-Another AI model has recommended BUYING {token} with {tier1_decision['confidence']:.0%} confidence.
-
-Reasoning: {tier1_decision['reasoning']}
-
-Current Price: ${context['quick_summary']['price']:.4f}
-Recent Sentiment: {context['quick_summary']['sentiment_1h']:.3f}
-Price Change (1h): {context['quick_summary']['price_change_1h']:.2f}%
-
-Do you agree with this BUY decision? Answer: AGREE or DISAGREE with brief reasoning.
-"""
-
-        # Get votes from each model (parallel)
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            futures = {}
-
-            # Submit Claude vote
-            futures['claude'] = executor.submit(
-                self._get_claude_vote, prompt
-            )
-
-            # Submit DeepSeek vote if available
-            if 'deepseek' in self.ensemble_clients:
-                futures['deepseek'] = executor.submit(
-                    self._get_deepseek_vote, prompt
-                )
-
-            # Submit Gemini vote if available
-            if 'gemini' in self.ensemble_clients:
-                futures['gemini'] = executor.submit(
-                    self._get_gemini_vote, prompt
-                )
-
-            # Collect votes
-            for model_name, future in futures.items():
-                try:
-                    vote = future.result(timeout=10)
-                    votes[model_name] = vote
-                    print(f"[ENSEMBLE] {model_name}: {vote}")
-                except Exception as e:
-                    print(f"[ERROR] {model_name} vote failed: {e}")
-                    votes[model_name] = 'DISAGREE'  # Conservative default
-
-        # Calculate weighted consensus using dynamic performance-based weights
-        total_weight = 0
-        agree_weight = 0
-
-        # Get dynamic weights from AI optimizer based on performance
-        scenario = tier1_decision.get('scenario', 'STANDARD')
-        dynamic_weights = self.ai_optimizer.calculate_dynamic_weights(scenario)
-
-        # Use dynamic weights if available, else fallback to regime/config weights
-        if dynamic_weights:
-            regime_weights = dynamic_weights
-        elif self.current_regime and 'model_weights' in self.current_regime:
-            regime_weights = self.current_regime['model_weights']
-        else:
-            # Fallback to config weights
-            regime_weights = {
-                'claude': config.ENSEMBLE_MODELS['claude']['weight'],
-                'deepseek': config.ENSEMBLE_MODELS['deepseek']['weight'],
-                'gemini': config.ENSEMBLE_MODELS['gemini']['weight']
-            }
-
-        for model_name, vote in votes.items():
-            weight = regime_weights.get(model_name, 0.33)
-            total_weight += weight
-            if vote == 'AGREE':
-                agree_weight += weight
-
-        consensus = agree_weight / total_weight if total_weight > 0 else 0
-
-        print(f"[ENSEMBLE] Consensus: {consensus:.0%} (threshold: {config.MIN_TIER2_CONSENSUS:.0%})")
-
-        return consensus >= config.MIN_TIER2_CONSENSUS
-
-    def _get_claude_vote(self, prompt: str) -> str:
-        """Get vote from Claude"""
-        try:
-            response = self.claude_client.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=200,
-                temperature=0.3,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            text = response.content[0].text.upper()
-            return 'AGREE' if 'AGREE' in text else 'DISAGREE'
-        except:
-            return 'DISAGREE'
-
-    def _get_deepseek_vote(self, prompt: str) -> str:
-        """Get vote from DeepSeek"""
-        try:
-            response = self.ensemble_clients['deepseek'].chat.completions.create(
-                model=config.ENSEMBLE_MODELS['deepseek']['name'],
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                temperature=0.3
-            )
-            text = response.choices[0].message.content.upper()
-            return 'AGREE' if 'AGREE' in text else 'DISAGREE'
-        except:
-            return 'DISAGREE'
-
-    def _get_gemini_vote(self, prompt: str) -> str:
-        """Get vote from Gemini"""
-        try:
-            response = self.ensemble_clients['gemini'].generate_content(prompt)
-            text = response.text.upper()
-            return 'AGREE' if 'AGREE' in text else 'DISAGREE'
-        except:
-            return 'DISAGREE'
-
     async def execute_decision(self, decision: Dict) -> bool:
         """Execute trading decision through portfolio manager"""
         try:
@@ -1126,6 +1663,14 @@ Do you agree with this BUY decision? Answer: AGREE or DISAGREE with brief reason
             price = self.data_intel.get_current_price(token)
             if not price:
                 print(f"[ERROR] Cannot execute - no price for {token}")
+                return False
+
+            # Enforce Binance-eligibility (for live/paper aligned with Binance)
+            if not self._symbol_is_tradeable(token):
+                return False
+
+            # Enforce per-token data freshness before executing
+            if not self._token_data_is_fresh(token):
                 return False
 
             if action == 'BUY':
@@ -1164,6 +1709,11 @@ Do you agree with this BUY decision? Answer: AGREE or DISAGREE with brief reason
                     print(f"[REJECTED] {token} - Poor R:R: {risk_reward:.2f}:1 (minimum 2:1 required)")
                     print(f"   Take Profit: {decision['take_profit_pct']:.1f}% / Stop Loss: {decision['stop_loss_pct']:.1f}%")
                     return False
+
+                if getattr(config, 'ENABLE_BROWSER_VERIFIER', True):
+                    context = decision.get('market_context')
+                    if not self.verify_browser_decision(token, decision, context):
+                        return False
 
                 # Execute buy (LONG position)
                 success = self.portfolio.open_position(
@@ -1251,6 +1801,11 @@ Do you agree with this BUY decision? Answer: AGREE or DISAGREE with brief reason
                     print(f"[REJECTED] {token} - Poor R:R: {risk_reward:.2f}:1 (minimum 2:1 required)")
                     print(f"   Take Profit: {decision['take_profit_pct']:.1f}% / Stop Loss: {decision['stop_loss_pct']:.1f}%")
                     return False
+
+                if getattr(config, 'ENABLE_BROWSER_VERIFIER', True):
+                    context = decision.get('market_context')
+                    if not self.verify_browser_decision(token, decision, context):
+                        return False
 
                 # Execute short (SHORT position)
                 success = self.portfolio.open_position(
@@ -1416,6 +1971,18 @@ Do you agree with this BUY decision? Answer: AGREE or DISAGREE with brief reason
 
                 # Target 3: Trailing stop for final 30% (handled by existing stop-loss logic)
                 # The remaining 30% stays in the position and exits via stop-loss or manual SELL
+
+                # TIME-BASED EXIT: Close stagnant positions after 48 hours
+                if position.get('entry_time'):
+                    position_age_hours = (datetime.now() - position['entry_time']).total_seconds() / 3600
+                    if position_age_hours > 48 and abs(pnl_pct) < 2.0:
+                        print(f"\n[STAGNANT EXIT] {token} held {position_age_hours:.1f}h with {pnl_pct:+.2f}% return")
+                        self.portfolio.close_position(
+                            token=token,
+                            exit_price=current_price,
+                            reasoning=f"Time-based exit: Stagnant after {position_age_hours:.0f} hours"
+                        )
+                        print(f"  ✓ Closed stagnant position to free capital")
 
             except Exception as e:
                 print(f"[ERROR] Failed to check partial profits for {token}: {e}")

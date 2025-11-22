@@ -54,7 +54,7 @@ scrapers:
     description: Monitors SEC EDGAR RSS for new filings
     enabled: true  # TESTING: Enabled for full system test
     free_tier: "Unlimited"
-    interval: "10 minutes"
+    interval: "5 minutes"
 
   # ==================== COMPANY FUNDAMENTALS ====================
   - name: FMP Fundamentals
@@ -162,6 +162,14 @@ scrapers:
     free_tier: "Free (Alternative.me API)"
     interval: "1 hour"
 
+  - name: Stablecoin Flow Monitor
+    script: crypto_scrapers/stablecoin_flow_scraper.py
+    category: crypto
+    description: Tracks USDT/USDC/DAI velocity & supply (0.87 BTC correlation, leads rallies)
+    enabled: true
+    free_tier: "Free (CoinGecko: 10k calls/month)"
+    interval: "30 minutes"
+
   - name: Binance Liquidations
     script: crypto_scrapers/binance_liquidations.py
     category: crypto
@@ -185,6 +193,39 @@ scrapers:
     enabled: true  # Ready to test
     free_tier: "Free (public API)"
     interval: "5 minutes"
+
+  - name: DEX Liquidity Monitor
+    script: crypto_scrapers/dex_liquidity_monitor.py
+    category: crypto
+    description: Tracks DEX liquidity & volume (40% market share, leads CEX)
+    enabled: true
+    free_tier: "Free (DexScreener + CoinGecko APIs)"
+    interval: "30 minutes"
+
+  - name: DeFi TVL Monitor
+    script: crypto_scrapers/defi_tvl_monitor.py
+    category: crypto
+    description: Tracks protocol TVL and capital flows across chains (DeFiLlama)
+    enabled: true
+    free_tier: "Free (DeFiLlama API, no key required)"
+    interval: "30 minutes"
+
+  - name: Options Volatility Monitor
+    script: crypto_scrapers/options_volatility_monitor.py
+    category: crypto
+    description: Tracks BTC/ETH implied volatility and skew for crash prediction (Deribit)
+    enabled: true
+    free_tier: "Free (Deribit public API, no key required)"
+    interval: "30 minutes"
+
+  - name: Bridge Flows Monitor
+    script: crypto_scrapers/bridge_flows_monitor.py
+    category: crypto
+    description: Tracks L1/L2 capital rotation via bridge flows (DeFiLlama Bridges)
+    enabled: true
+    mode: oneshot  # runs once per interval; script exits after a single cycle
+    free_tier: "Free (DeFiLlama Bridges API, no key required, 500 req/min)"
+    interval: "30 minutes"
 
 # ==================== FUTURE SCRAPERS ====================
 # To add a new scraper, copy this template:

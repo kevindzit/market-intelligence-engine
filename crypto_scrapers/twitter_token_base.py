@@ -231,8 +231,8 @@ class TwitterTokenScraperBase:
                             'likes': getattr(tweet, 'favorite_count', 0) or 0,
                             'replies': getattr(tweet, 'reply_count', 0) or 0,
                             'quotes': getattr(tweet, 'quote_count', 0) or 0,
-                            'created_at': getattr(tweet, 'created_at', datetime.now()),
-                            'timestamp': datetime.now(),
+                            'created_at': getattr(tweet, 'created_at', datetime.utcnow()),
+                            'timestamp': datetime.utcnow(),
                             'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
                             'hashtag_count': tweet.text.count('#')
                         }
@@ -258,7 +258,31 @@ class TwitterTokenScraperBase:
 
             except Exception as e:
                 error_msg = str(e).lower()
-                if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
+                error_str = str(e)
+
+                # Check for Cloudflare blocking (specific error pattern)
+                if "'clienttransaction' object has no attribute 'key'" in error_msg:
+                    print(f"[WARN] Cloudflare challenge detected - triggering cookie refresh")
+
+                    # Try to refresh cookies for this account
+                    if self._handle_auth_error():
+                        print(f"[OK] Cookies refreshed after Cloudflare challenge, retrying {token}...")
+                        await asyncio.sleep(randint(2, 4))
+                        attempt += 1
+                        continue
+                    else:
+                        # Couldn't refresh, try rotating to another account
+                        if self._swap_account_after_rate_limit():
+                            print(f"[OK] Rotated to another account after Cloudflare, retrying {token}...")
+                            await asyncio.sleep(randint(2, 4))
+                            attempt += 1
+                            continue
+                        else:
+                            print(f"[ERROR] Unable to bypass Cloudflare, skipping {token}")
+                            break
+
+                # Check for regular auth errors
+                elif '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                     print(f"[WARN] Authentication error detected: {e}")
 
                     # Try to refresh cookies for this account

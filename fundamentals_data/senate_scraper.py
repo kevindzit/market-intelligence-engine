@@ -13,6 +13,12 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+try:
+    from scraper_utils.heartbeat import touch_heartbeat
+except ImportError:
+    def touch_heartbeat(_: str):
+        pass
+
 # Load environment variables
 load_dotenv()
 
@@ -190,3 +196,4 @@ if __name__ == "__main__":
         save_to_db(cleaned_transactions)
     else:
         logging.info("No transactions were found or scraped.")
+    touch_heartbeat('Senate Scraper')

@@ -24,7 +24,13 @@ DB_USER = os.getenv('DB_USER', 'postgres')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'postgres')
 
 # Scraper configuration
-UPDATE_INTERVAL = 6 * 60 * 60  # 6 hours (updates daily, we check periodically)
+# API updates once per day (Alternative.me publishes a single daily value
+# around 00:00 UTC and exposes a countdown in `time_until_update`).
+# We poll on that countdown to avoid unnecessary requests while still
+# picking up the new value shortly after it posts.
+UPDATE_INTERVAL = 6 * 60 * 60  # Fallback max wait (seconds)
+MIN_INTERVAL = 30 * 60         # Minimum wait between polls (seconds)
+BUFFER_SECONDS = 120           # Small buffer to poll shortly after countdown
 API_URL = "https://api.alternative.me/fng/"
 
 
@@ -67,11 +73,19 @@ class FearGreedScraper:
             value = int(latest['value'])
             classification = latest['value_classification']
             timestamp = datetime.fromtimestamp(int(latest['timestamp']))
+            # Only present on the latest entry; tells us when the next update will land
+            time_until_update = latest.get('time_until_update')
+            try:
+                if time_until_update is not None:
+                    time_until_update = int(time_until_update)
+            except (TypeError, ValueError):
+                time_until_update = None
 
             return {
                 'value': value,
                 'classification': classification,
-                'timestamp': timestamp
+                'timestamp': timestamp,
+                'time_until_update': time_until_update
             }
 
         except Exception as e:
@@ -110,6 +124,7 @@ class FearGreedScraper:
         print(f"\n{'='*60}")
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Fear & Greed Index Cycle #{self.cycle_count}")
         print('='*60)
+        next_wait = UPDATE_INTERVAL
 
         record = self.fetch_index()
 
@@ -141,10 +156,20 @@ class FearGreedScraper:
             else:
                 print(f"     Already in database (no update needed)")
 
-            return True
+            # Respect API countdown when present, with a small buffer to catch the next value promptly
+            if record.get('time_until_update') is not None:
+                next_wait = min(
+                    UPDATE_INTERVAL,
+                    max(MIN_INTERVAL, record['time_until_update'] + BUFFER_SECONDS)
+                )
+            else:
+                next_wait = UPDATE_INTERVAL
+
+            return True, next_wait
         else:
             print("[ERROR] Failed to fetch index")
-            return False
+            # Retry sooner on failure
+            return False, MIN_INTERVAL
 
     def run(self):
         """Main loop"""
@@ -158,10 +183,11 @@ class FearGreedScraper:
 
         while True:
             try:
-                self.run_cycle()
+                success, wait_seconds = self.run_cycle()
 
-                print(f"\nNext update in {UPDATE_INTERVAL//3600} hours...")
-                time.sleep(UPDATE_INTERVAL)
+                hours = wait_seconds / 3600
+                print(f"\nNext update in {hours:.2f} hours...")
+                time.sleep(wait_seconds)
 
             except KeyboardInterrupt:
                 print("\n[INFO] Shutting down...")

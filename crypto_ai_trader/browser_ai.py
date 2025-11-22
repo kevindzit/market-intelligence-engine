@@ -7,14 +7,14 @@ import time
 import os
 import json
 import re
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from urllib.parse import urlparse
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
 import undetected_chromedriver as uc
 import pickle
 
@@ -309,6 +309,19 @@ CLAUDE_REASONING_MARKERS = (
     'analysis step',
     'thinking...',
     'thinking…',
+    'deliberating',
+    'calibrating',
+    'scrutinizing',
+    'assessing',
+    'awaiting',
+    'formatting',
+    'reconciling',
+    'orchestrating',
+    'aligning format',
+    'crafting response',
+    'preparing response',
+    'compiling context',
+    'ready to help',
 )
 
 CLAUDE_REASONING_LINE_PATTERNS = [
@@ -317,6 +330,12 @@ CLAUDE_REASONING_LINE_PATTERNS = [
     re.compile(r'^\s*(search )?results?:', re.IGNORECASE),
     re.compile(r'searching\s+(the\s+)?web', re.IGNORECASE),
     re.compile(r'\bthinking\.\.\.$', re.IGNORECASE),
+    re.compile(r'^\s*deliberating\b', re.IGNORECASE),
+    re.compile(r'^\s*awaiting\b', re.IGNORECASE),
+    re.compile(r'^\s*format(ting| adjustment)', re.IGNORECASE),
+    re.compile(r'^\s*scrutiniz', re.IGNORECASE),
+    re.compile(r'^\s*assessing\b', re.IGNORECASE),
+    re.compile(r'^\s*calibrating\b', re.IGNORECASE),
 ]
 
 
@@ -418,11 +437,22 @@ def claude_response_is_reasoning(text: str) -> bool:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return True
+    lowered_lines = [line.lower() for line in lines]
+    command_tokens = ("request:", "complete:", "action=", "confidence=", "| token=")
+    has_command = any(
+        any(token in line for token in command_tokens) for line in lowered_lines
+    )
     reasoning_lines = sum(1 for line in lines if claude_line_is_reasoning(line))
     if reasoning_lines == len(lines):
         return True
     if len(lines) <= 3 and reasoning_lines >= 1:
         return True
+    collapsed = " ".join(lines)
+    if not has_command:
+        if len(lines) <= 2:
+            return True
+        if len(collapsed) <= 160:
+            return True
     return reasoning_lines >= max(1, len(lines) - 1)
 
 
@@ -556,6 +586,27 @@ class BrowserAI:
                 pass
 
         return cleared
+
+    def refresh_session_cache(self, reason: str = "") -> bool:
+        """
+        Clear cached assets and refresh the active page to recover from stale DOM state.
+        Returns True if the refresh sequence executed.
+        """
+        if not self.driver:
+            return False
+
+        reason_suffix = f" ({reason})" if reason else ""
+        print(f"🔄 Refreshing {self.provider.upper()} cache{reason_suffix}...")
+
+        refreshed = self.clear_site_cache()
+        try:
+            self.driver.refresh()
+            time.sleep(2)
+            refreshed = True
+        except Exception:
+            pass
+
+        return refreshed
 
     def dismiss_claude_errors(self) -> int:
         """Close Claude toast errors that stack in the top-right corner."""
@@ -1041,16 +1092,21 @@ class BrowserAI:
                 print(f"❌ Invalid response selector for {self.provider}")
                 return None
 
-            def snapshot_response_counts() -> Dict[str, int]:
+            def snapshot_response_counts() -> Dict[str, Dict[str, Any]]:
                 counts = {}
                 for sel in response_selector_list:
                     try:
-                        counts[sel] = len(self.driver.find_elements(By.CSS_SELECTOR, sel))
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                        last_text = elements[-1].text if elements else ""
+                        counts[sel] = {
+                            'count': len(elements),
+                            'last_text': last_text.strip(),
+                        }
                     except Exception:
-                        counts[sel] = 0
+                        counts[sel] = {'count': 0, 'last_text': ''}
                 return counts
 
-            def wait_for_new_response(previous_counts: Dict[str, int], wait_timeout: int):
+            def wait_for_new_response(previous_counts: Dict[str, Dict[str, Any]], wait_timeout: int):
                 end_time = time.time() + wait_timeout
                 while time.time() < end_time:
                     for sel in response_selector_list:
@@ -1059,12 +1115,27 @@ class BrowserAI:
                         except Exception:
                             continue
 
-                        prev = previous_counts.get(sel, 0)
-                        if prev is None:
-                            prev = 0
+                        prev_state = previous_counts.get(sel, {'count': 0, 'last_text': ''})
+                        prev_count = prev_state.get('count', 0)
+                        prev_text = prev_state.get('last_text', '')
 
-                        if len(elements) > prev:
+                        if len(elements) > prev_count:
                             return sel, elements
+
+                        if elements:
+                            latest_text = elements[-1].text.strip()
+                            if latest_text and latest_text != prev_text:
+                                return sel, elements
+
+                    # If generation indicator disappears and counts unchanged, break early
+                    if not generation_active():
+                        for sel in response_selector_list:
+                            try:
+                                elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                                if elements:
+                                    return sel, elements
+                            except Exception:
+                                continue
                     time.sleep(0.2)
                 raise TimeoutException("Timed out waiting for response to appear")
 
@@ -1147,97 +1218,147 @@ class BrowserAI:
                         continue
 
             if not input_element:
+                if _attempt < 3 and self.refresh_session_cache("input element missing"):
+                    return self.send_prompt(prompt, timeout, _attempt + 1)
                 print(f"❌ Could not find input field")
                 return None
 
-            # Click and clear the input
             try:
-                input_element.click()
-            except Exception:
+                # Click and clear the input
                 try:
-                    self.driver.execute_script("arguments[0].click();", input_element)
+                    input_element.click()
                 except Exception:
-                    pass
-            time.sleep(0.2)
-            if self.provider == 'gemini':
+                    try:
+                        self.driver.execute_script("arguments[0].click();", input_element)
+                    except Exception:
+                        pass
+                time.sleep(0.2)
+                if self.provider == 'gemini':
+                    try:
+                        self.driver.execute_script(
+                            "arguments[0].focus(); arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
+                            input_element,
+                        )
+                    except Exception:
+                        pass
+
+                # Clear any existing text
                 try:
-                    self.driver.execute_script(
-                        "arguments[0].focus(); arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
-                        input_element,
-                    )
+                    input_element.send_keys(Keys.CONTROL + "a")
+                    input_element.send_keys(Keys.DELETE)
                 except Exception:
-                    pass
+                    try:
+                        if (input_element.get_attribute("contenteditable") or "").lower() == "true":
+                            self.driver.execute_script("arguments[0].innerText = '';", input_element)
+                        else:
+                            self.driver.execute_script("arguments[0].value = '';", input_element)
+                    except Exception:
+                        pass
+                time.sleep(0.15)
 
-            # Clear any existing text
-            try:
-                input_element.send_keys(Keys.CONTROL + "a")
-                input_element.send_keys(Keys.DELETE)
-            except Exception:
+                # Type the prompt
+                typed_prompt = False
                 try:
-                    if (input_element.get_attribute("contenteditable") or "").lower() == "true":
-                        self.driver.execute_script("arguments[0].innerText = '';", input_element)
-                    else:
-                        self.driver.execute_script("arguments[0].value = '';", input_element)
-                except Exception:
-                    pass
-            time.sleep(0.15)
-
-            # Type the prompt
-            typed_prompt = False
-            try:
-                input_element.send_keys(prompt)
-                typed_prompt = True
-            except Exception:
-                pass
-
-            if not typed_prompt:
-                try:
-                    self.driver.execute_script(
-                        """
-                        const el = arguments[0];
-                        const value = arguments[1];
-                        if (!el) { return false; }
-                        if (el.tagName === 'TEXTAREA') {
-                            el.value = value;
-                        } else if (el.isContentEditable) {
-                            el.innerText = value;
-                        } else {
-                            el.textContent = value;
-                        }
-                        const Ctor = typeof InputEvent === 'function' ? InputEvent : Event;
-                        el.dispatchEvent(new Ctor('input', {bubbles: true}));
-                        return true;
-                        """,
-                        input_element,
-                        prompt,
-                    )
+                    input_element.send_keys(prompt)
                     typed_prompt = True
                 except Exception:
-                    typed_prompt = False
+                    pass
 
-            if not typed_prompt:
-                print("❌ Failed to type prompt")
-                return None
+                if not typed_prompt:
+                    try:
+                        self.driver.execute_script(
+                            """
+                            const el = arguments[0];
+                            const value = arguments[1];
+                            if (!el) { return false; }
+                            if (el.tagName === 'TEXTAREA') {
+                                el.value = value;
+                            } else if (el.isContentEditable) {
+                                el.innerText = value;
+                            } else {
+                                el.textContent = value;
+                            }
+                            const Ctor = typeof InputEvent === 'function' ? InputEvent : Event;
+                            el.dispatchEvent(new Ctor('input', {bubbles: true}));
+                            return true;
+                            """,
+                            input_element,
+                            prompt,
+                        )
+                        typed_prompt = True
+                    except Exception:
+                        typed_prompt = False
+
+                if not typed_prompt:
+                    print("❌ Failed to type prompt")
+                    return None
+            except StaleElementReferenceException:
+                if _attempt >= 3:
+                    print("❌ Input field became stale repeatedly.")
+                    return None
+                print("⚠️ Input element went stale, retrying...")
+                time.sleep(0.5)
+                return self.send_prompt(prompt, timeout, _attempt + 1)
 
             previous_counts = snapshot_response_counts()
 
-            # Send it (try button first, then Enter)
-            send_selector = selectors.get('send')
-            sent = False
+            def submit_prompt() -> bool:
+                send_selector = selectors.get('send')
+                if send_selector:
+                    for selector in send_selector.split(','):
+                        sel = selector.strip()
+                        if not sel:
+                            continue
+                        try:
+                            send_button = WebDriverWait(self.driver, 3).until(
+                                EC.element_to_be_clickable((By.CSS_SELECTOR, sel))
+                            )
+                            if send_button:
+                                try:
+                                    self.driver.execute_script(
+                                        "arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
+                                        send_button,
+                                    )
+                                except Exception:
+                                    pass
+                                send_button.click()
+                                return True
+                        except StaleElementReferenceException:
+                            continue
+                        except TimeoutException:
+                            continue
+                        except Exception:
+                            continue
 
-            if send_selector:
-                for selector in send_selector.split(','):
-                    try:
-                        send_button = self.driver.find_element(By.CSS_SELECTOR, selector.strip())
-                        if send_button and send_button.is_displayed():
-                            send_button.click()
-                            sent = True
+                # Fallback: press Enter on active element or refreshed input
+                try:
+                    active = self.driver.switch_to.active_element
+                    active.send_keys(Keys.SHIFT, Keys.ENTER)
+                    active.send_keys(Keys.RETURN)
+                    return True
+                except Exception:
+                    pass
+
+                try:
+                    refreshed_selector = None
+                    for sel in input_selector.split(','):
+                        if sel.strip():
+                            refreshed_selector = sel.strip()
                             break
-                    except Exception:
-                        continue
+                    if refreshed_selector:
+                        refreshed_input = self.driver.find_element(By.CSS_SELECTOR, refreshed_selector)
+                        refreshed_input.send_keys(Keys.SHIFT, Keys.ENTER)
+                        refreshed_input.send_keys(Keys.RETURN)
+                        return True
+                except Exception:
+                    pass
 
+                return False
+
+            sent = submit_prompt()
             if not sent:
-                input_element.send_keys(Keys.RETURN)
+                print("❌ Failed to submit prompt (send button/Enter)")
+                return None
 
             # Wait for response
             print(f"⏳ Waiting for {self.provider.upper()} response...")
@@ -1423,11 +1544,22 @@ class BrowserAI:
                 print(f"❌ Response element exists but no text found")
                 return None
 
+        except StaleElementReferenceException:
+            if _attempt >= 3:
+                print("❌ Response elements kept going stale; aborting.")
+                return None
+            print("⚠️ Response DOM refreshed, retrying prompt send...")
+            time.sleep(0.5)
+            return self.send_prompt(prompt, timeout, _attempt + 1)
         except TimeoutException:
             print(f"❌ Timeout waiting for response")
+            if _attempt < 3 and self.refresh_session_cache("response timeout"):
+                return self.send_prompt(prompt, timeout, _attempt + 1)
             return None
         except Exception as e:
             print(f"❌ Failed to get response: {e}")
+            if _attempt < 3 and self.refresh_session_cache("unexpected error"):
+                return self.send_prompt(prompt, timeout, _attempt + 1)
             return None
 
     def try_new_chat(self):
@@ -1455,24 +1587,127 @@ class BrowserAI:
         Returns:
             Trading decision dict or None
         """
-        # Build a simple prompt
+        def _fmt(val, decimals=2, fallback="n/a"):
+            try:
+                return round(float(val), decimals)
+            except Exception:
+                return fallback
+
+        quick = context.get('quick_summary', {}) or {}
+        ob = context.get('order_book_intel', {}) or {}
+        metrics = context.get('market_metrics', {}) or {}
+        liq_cascade = context.get('liquidation_cascade', {}) or {}
+        whales = context.get('whale_activity', []) or []
+        smart = context.get('smart_money_flows', []) or []
+        dex = context.get('dex_metrics', {}) or {}
+        options_risk = context.get('options_volatility', {}) or {}
+        defi_risk = context.get('defi_risk', {}) or {}
+        macro = context.get('macro_intelligence', {}) or {}
+        historical = context.get('historical_patterns', {}) or {}
+        portfolio = context.get('portfolio', {}) or {}
+        stable = context.get('stablecoin_metrics', {}) or {}
+        fg = context.get('fear_greed', {}) or {}
+        bridge = context.get('bridge_flows', {}) or {}
+
+        whale_line = ""
+        if whales:
+            w = whales[0]
+            whale_line = f"Whales: {w.get('flow_type','')} ${_fmt(w.get('total_usd',0),0)} ({w.get('transactions','?')} tx); "
+        smart_line = ""
+        if smart:
+            s = smart[0]
+            smart_line = f"SmartFlows: {s.get('reason','')} strength {_fmt(s.get('strength',0),2)}; "
+        dex_line = ""
+        if dex:
+            dex_line = f"DEX: liq ${_fmt(dex.get('liquidity_usd',0),0)}, vol24h ${_fmt(dex.get('volume_24h',0),0)}, v/l {_fmt(dex.get('volume_to_liquidity_ratio',0),2)}; "
+        hist_line = ""
+        if historical.get('has_patterns'):
+            hist_line = f"Pattern: {historical.get('signal','')} conf {_fmt(historical.get('confidence',0),1)} win_rate {_fmt(historical.get('statistics',{}).get('win_rate',0),1)} rr {_fmt(historical.get('statistics',{}).get('risk_reward_ratio',0),2)}; "
+        opt_line = ""
+        if options_risk:
+            opt_line = f"Options: {options_risk.get('volatility_regime','?')} skew {options_risk.get('directional_bias','?')} adj {_fmt(options_risk.get('position_adjustment',1),2)};"
+        defi_line = ""
+        if defi_risk:
+            defi_line = f"DeFi: {defi_risk.get('risk_level','?')} adj {_fmt(defi_risk.get('position_adjustment',1),2)};"
+        macro_line = ""
+        if macro:
+            macro_line = f"Macro: {macro.get('regime','?')} {macro.get('warning','')}"
+        bridge_line = ""
+        if bridge:
+            bridge_line = f"L2 rotation: {bridge.get('leader','N/A')} status {bridge.get('rotation_status','N/A')}"
+        fg_line = ""
+        if fg:
+            fg_line = f"FearGreed: {fg.get('value','?')} ({fg.get('classification','')})"
+
+        # Build compact prompt with available context only
         quick = context.get('quick_summary', {})
 
-        prompt = f"""Analyze {token} for trading.
+        prompt_lines = [
+            f"Analyze {token} for trading. Use the structured context below:",
+            f"QUICK: price ${_fmt(quick.get('price',0),6)}, chg1h {_fmt(quick.get('price_change_1h',0),2)}%, tweets_1h {quick.get('tweets_1h',0)}, sentiment {_fmt(quick.get('sentiment_1h',0),3)}, vol_spike {_fmt(quick.get('volume_spike',1),1)}x, regime {context.get('market_regime','UNKNOWN')}",
+        ]
 
-Current Price: ${quick.get('price', 0):.6f}
-1h Change: {quick.get('price_change_1h', 0):.2f}%
-Volume Spike: {quick.get('volume_spike', 1):.1f}x
-Sentiment: {quick.get('sentiment_1h', 0):.3f}
-Market: {context.get('market_regime', 'UNKNOWN')}
+        # Order book / liquidity
+        if ob:
+            pressure = ob.get('pressure', {}) or {}
+            spread = ob.get('spread', {}) or {}
+            prompt_lines.append(
+                f"ORDER_BOOK: pressure {pressure.get('signal','?')} imbalance {_fmt(pressure.get('imbalance',0),2)} spread {spread.get('quality','?')} bbo_bid {_fmt(spread.get('best_bid',0),4)} bbo_ask {_fmt(spread.get('best_ask',0),4)}"
+            )
 
-Respond with ONLY these lines:
-ACTION: BUY or SHORT or SELL or HOLD
-CONFIDENCE: 0.0 to 1.0
-SIZE: 0.5 to 3.0
-STOP: percentage
-PROFIT: percentage
-REASON: one sentence"""
+        if metrics:
+            liq = metrics.get('liquidations_1h', {}) or {}
+            prompt_lines.append(
+                f"MARKET: oi_chg {_fmt(metrics.get('oi_change_pct',0),2)}% oi_usd ${_fmt(metrics.get('open_interest_usd',0),0)} liq1h_ct {liq.get('count',0)} liq1h_usd ${_fmt(liq.get('value',0),0)}"
+            )
+
+        if liq_cascade:
+            prompt_lines.append(
+                f"LIQ_CASCADE: type {liq_cascade.get('cascade_type','NEUTRAL')} risk {_fmt(liq_cascade.get('risk_score',0),0)} rec {liq_cascade.get('recommendation','NEUTRAL')}"
+            )
+
+        if whale_line or smart_line:
+            prompt_lines.append(f"FLOWS: {whale_line}{smart_line}".strip())
+
+        if dex_line:
+            prompt_lines.append(dex_line.strip())
+
+        if stable:
+            prompt_lines.append(
+                f"STABLES: mcap ${_fmt(stable.get('total_market_cap',0),0)} vol24h ${_fmt(stable.get('total_volume',0),0)} vel {_fmt(stable.get('avg_velocity',0),3)}"
+            )
+
+        if opt_line or defi_line:
+            prompt_lines.append(f"RISK: {opt_line} {defi_line}".strip())
+
+        if macro_line:
+            prompt_lines.append(macro_line.strip())
+
+        if fg_line:
+            prompt_lines.append(fg_line.strip())
+
+        if bridge_line:
+            prompt_lines.append(bridge_line.strip())
+
+        if hist_line:
+            prompt_lines.append(hist_line.strip())
+
+        if portfolio:
+            prompt_lines.append(
+                f"PORTFOLIO: pos_ct {portfolio.get('open_position_count',0)} cash ${_fmt(portfolio.get('cash_available',0),0)} total ${_fmt(portfolio.get('total_value',0),0)} pnl_day ${_fmt(portfolio.get('daily_pnl',0),0)}"
+            )
+
+        prompt_lines.append(
+            "Respond with ONLY these lines (no extra text):\n"
+            "ACTION: BUY or SHORT or SELL or HOLD\n"
+            "CONFIDENCE: 0.0 to 1.0\n"
+            "SIZE: 1.0 to 5.0 (% of equity)\n"
+            "STOP: percentage\n"
+            "PROFIT: percentage\n"
+            "REASON: one sentence"
+        )
+
+        prompt = "\n".join(prompt_lines)
 
         # Get response from AI
         response = self.send_prompt(prompt)

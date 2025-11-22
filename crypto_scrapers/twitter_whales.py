@@ -38,10 +38,10 @@ setup_httpx_patching()
 from twikit import TooManyRequests
 
 # WHALE WATCHLIST - High-signal accounts that move markets
-# CURRENT: 42 accounts (rate limit safe, MAX = 45)
-# Updated: October 29, 2025 - Added 4 top-tier 2025 influencers
+# CURRENT: 49 accounts (expanded November 2025)
+# Updated: November 11, 2025 - Added 7 top-tier market movers (Saylor, CZ, Miles, Rover, Melker, Cobie, Tony)
 WHALE_ACCOUNTS = {
-    # ========== ALPHA CALLERS & EARLY GEM SPECIALISTS (15) ==========
+    # ========== ALPHA CALLERS & EARLY GEM SPECIALISTS (17) ==========
     'blknoiz06': 'Alpha Caller (MOG, WIF) - Ansem, meme king, $20-30M net worth',
     'LarpVonTrier': 'Alpha Caller (KeyCat)',
     'artsch00lreject': 'Alpha Caller (PopCat)',
@@ -58,6 +58,8 @@ WHALE_ACCOUNTS = {
     'tier10k': 'Alpha Caller (Hidden gems)',
     'MustStopMurad': 'Alpha Caller (Meme super cycle) - Works with Ansem',
     'Trader_XO_': 'Alpha Caller (500K) - Precise altcoin setups, swing trading',
+    'milesdeutscher': 'Alpha Caller (600K) - DeFi & AI specialist, sentiment frameworks',
+    'cobie': 'Alpha Caller (Crypto Insider) - Echo founder, sold to Coinbase $375M',
 
     # ========== INSIDERS & DEPLOYERS (2) ==========
     'GamesMasterFlex': 'Insider (Dogwifhat organizer)',
@@ -74,12 +76,13 @@ WHALE_ACCOUNTS = {
     'DeBankDeFi': 'Flow Signal (Whale tracking DeFi)',
     'arkhamintel': 'On-Chain Intel (331K) - Whale movements, multi-chain',
 
-    # ========== TECHNICAL ANALYSIS EXPERTS (3) ==========
+    # ========== TECHNICAL ANALYSIS EXPERTS (4) ==========
     'CryptoCred': 'Technical Analysis Expert (700K) - London-based',
     'SmartContractor': 'Technical Analysis (Bluntz) - Elliott Wave',
     'VentureCoinist': 'TA Expert (308K) - Trade entries',
+    'CryptoTony__': 'TA Expert (520K) - Daily BTC/ETH/altcoin analysis, Dubai-based',
 
-    # ========== HIGH-PROFILE GENERAL CRYPTO (7) ==========
+    # ========== HIGH-PROFILE GENERAL CRYPTO (11) ==========
     'Ashcryptoreal': 'Dubai Analyst (1.7M) - Market forecasts since 2015',
     'thecryptodog': 'Altcoin Commentary (715K) - Top altcoins',
     'Pentosh1': 'Free Alpha Provider (700K+) - 4+ years',
@@ -87,6 +90,10 @@ WHALE_ACCOUNTS = {
     'VitalikButerin': 'Ethereum Co-Founder - Macro insights',
     'APompliano': 'Anthony Pompliano - Macro + Bitcoin',
     'CryptoKaleo': 'Options Trader (473K) - Daily market commentary, top calls',
+    'saylor': 'Michael Saylor (MicroStrategy CEO) - 576K+ BTC holdings, market-moving tweets',
+    'cz_binance': 'CZ (Binance Founder) - $88B net worth, tweets cause 3%+ price moves',
+    'rovercrc': 'Crypto Rover (1.4M) - Retail sentiment indicator, Bitcoin predictions',
+    'scottmelker': 'Wolf of All Streets (950K) - Podcast host, Binance Influencer of Year',
 
     # ========== PLATFORM/ECOSYSTEM (6) ==========
     'TheCryptoLark': 'Market Analysis (Lark Davis) - Meme updates',
@@ -95,7 +102,7 @@ WHALE_ACCOUNTS = {
     'BasedBrett': 'Base Chain Memecoin - Official account',
     'Aeyakovenko': 'Solana Co-Founder - Anatoly Yakovenko',
     'whale_alert': 'Flow Signal (Large transactions) - Real-time alerts',
-}  # Total: 42 accounts (3 slots available for new whales)
+}  # Total: 49 accounts (Nov 2025 expansion - added Saylor, CZ, Miles, Rover, Melker, Cobie, Tony)
 
 # Tokens to specifically look for in whale tweets
 PRIORITY_TOKENS = [
@@ -249,8 +256,8 @@ class WhaleTracker:
                             'likes': getattr(tweet, 'favorite_count', 0) or 0,
                             'replies': getattr(tweet, 'reply_count', 0) or 0,
                             'quotes': getattr(tweet, 'quote_count', 0) or 0,
-                            'created_at': getattr(tweet, 'created_at', datetime.now()),
-                            'timestamp': datetime.now(),
+                            'created_at': getattr(tweet, 'created_at', datetime.utcnow()),
+                            'timestamp': datetime.utcnow(),
                             'mentioned_tokens': self.extract_mentioned_tokens(tweet.text),
                             'account_type': WHALE_ACCOUNTS.get(username, 'Unknown'),
                             'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),

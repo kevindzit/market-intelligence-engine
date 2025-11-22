@@ -43,7 +43,10 @@ ALWAYS_MONITOR_INTERVAL = 5 * 60  # Analyze these every 5 min regardless of filt
 
 # Trading mode
 PAPER_TRADING = True  # IMPORTANT: Keep True until validated
-ENABLE_TIER2_VERIFICATION = True  # Enable ensemble for BUY signals
+
+# Binance Trading Integration
+USE_BINANCE_TRADING = False  # Set to True to enable real exchange trading
+BINANCE_PAPER_TRADING = True  # True for testnet (paper), False for real trading
 
 # Multi-timeframe architecture toggles
 ENABLE_TACTICAL_MONITORING = True  # Enable high-frequency tactical alerts
@@ -89,8 +92,15 @@ SLIPPAGE_PCT = 0.05  # 0.05% slippage (conservative estimate)
 # Browser-based AI System (using Selenium to avoid API costs)
 USE_BROWSER_AI = True  # Use browser instead of API calls
 BROWSER_AI_PROVIDER = 'claude'  # Which AI to use: 'claude' or 'chatgpt'
-BROWSER_HEADLESS = True  # Run browser in background (set False for debugging)
+BROWSER_HEADLESS = False  # Run browser in background (set False for debugging)
 BROWSER_AI_TIMEOUT = 30  # Seconds to wait for browser response
+BROWSER_DECISION_LOG_DIR = os.getenv('BROWSER_DECISION_LOG_DIR', '')
+
+# Risk verifier settings (browser-based)
+ENABLE_BROWSER_VERIFIER = True
+BROWSER_VERIFIER_PROVIDER = os.getenv('BROWSER_VERIFIER_PROVIDER', 'chatgpt')
+BROWSER_VERIFIER_TIMEOUT = 40
+BROWSER_VERIFIER_MIN_CONFIDENCE = 0.7
 
 # Dynamic frequency adjustment based on volatility
 ENABLE_DYNAMIC_FREQUENCY = True  # Adjust analysis frequency based on market conditions
@@ -105,31 +115,8 @@ CLAUDE_MODEL = 'claude-sonnet-4-5-20250929'  # Latest Sonnet 4.5 model
 CLAUDE_MAX_TOKENS = 1000
 CLAUDE_TEMPERATURE = 0.7
 
-# Tier 2: Ensemble models (for BUY signal verification)
-ENSEMBLE_MODELS = {
-    'claude': {
-        'name': 'claude-sonnet-4-5-20250929',
-        'weight': 0.40,  # 40% voting weight
-        'api_key': os.getenv('ANTHROPIC_KEY', ''),  # Using your env var name
-        'enable_extended_thinking': True
-    },
-    'deepseek': {
-        'name': 'deepseek-chat',
-        'weight': 0.35,  # 35% voting weight
-        'api_key': os.getenv('DEEPSEEK_KEY', ''),  # Using your env var name
-        'enable_extended_thinking': True
-    },
-    'gemini': {
-        'name': 'gemini-2.0-flash-exp',
-        'weight': 0.25,  # 25% voting weight
-        'api_key': os.getenv('GEMINI_KEY', '')  # Using your env var name
-    }
-}
-
 # Confidence thresholds
-MIN_TIER1_CONFIDENCE = 0.60  # Minimum confidence to consider signal
-TIER2_TRIGGER_CONFIDENCE = 0.80  # If Tier 1 < 80%, always verify BUY
-MIN_TIER2_CONSENSUS = 0.70  # Ensemble must have >70% consensus to execute
+MIN_DECISION_CONFIDENCE = 0.60  # Minimum confidence required to consider a signal
 
 # Tactical alert confidence thresholds (tiered execution)
 TACTICAL_ALERT_IMMEDIATE_THRESHOLD = 85  # >=85% confidence = execute within 2 minutes
@@ -317,8 +304,7 @@ Remember: It's better to miss an opportunity than to take a bad trade. When unce
 
 # Enable detailed logging
 VERBOSE_LOGGING = True
-LOG_TIER1_DECISIONS = True
-LOG_TIER2_VOTES = True
+LOG_DECISION_EVENTS = True
 LOG_REJECTED_SIGNALS = True
 
 # ============================================================================
@@ -343,11 +329,6 @@ def validate_config():
     if not CLAUDE_API_KEY:
         errors.append("CLAUDE_API_KEY not found in .env file")
 
-    if ENABLE_TIER2_VERIFICATION:
-        for model_name, config in ENSEMBLE_MODELS.items():
-            if not config['api_key']:
-                errors.append(f"{model_name.upper()}_API_KEY not found in .env file")
-
     # Validate risk parameters
     if MAX_POSITION_SIZE_PCT > 10:
         errors.append("MAX_POSITION_SIZE_PCT should not exceed 10%")
@@ -356,11 +337,8 @@ def validate_config():
         errors.append("CASH_RESERVE_PCT should be at least 10%")
 
     # Validate confidence thresholds
-    if MIN_TIER1_CONFIDENCE < 0.5:
-        errors.append("MIN_TIER1_CONFIDENCE should be at least 0.50")
-
-    if MIN_TIER2_CONSENSUS < 0.6:
-        errors.append("MIN_TIER2_CONSENSUS should be at least 0.60")
+    if MIN_DECISION_CONFIDENCE < 0.5:
+        errors.append("MIN_DECISION_CONFIDENCE should be at least 0.50")
 
     if errors:
         print("\n[CONFIG ERRORS]")

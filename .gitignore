@@ -64,3 +64,9 @@ BUG NOTES.txt
 pjx.code-workspace
 
 backups/
+
+# Large binary files
+*.deb
+google-chrome-stable_current_amd64.deb
+.browser_sessions/
+downloaded_files/

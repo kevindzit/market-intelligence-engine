@@ -182,9 +182,13 @@ class OrderBookScraper:
                     saved += 1
                 except Exception as e:
                     print(f"[WARNING] Failed to insert {record['token']}: {e}")
-                    self.db_conn.rollback()
+                    # Don't rollback the entire transaction, just skip this record
+                    continue
 
             self.db_conn.commit()
+
+            if saved == 0 and len(records) > 0:
+                print(f"[WARNING] No records were saved out of {len(records)} attempted")
 
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
@@ -279,6 +283,7 @@ class OrderBookScraper:
 
         while True:
             try:
+                cycle_start = time.time()
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting cycle #{self.cycle_count + 1}...")
                 saved = self.run_cycle()
 
@@ -297,8 +302,10 @@ class OrderBookScraper:
                     except Exception as e:
                         print(f"[ERROR] Reconnection failed: {e}")
 
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Sleeping for {UPDATE_INTERVAL} seconds...")
-                time.sleep(UPDATE_INTERVAL)
+                elapsed = time.time() - cycle_start
+                sleep_time = max(1, UPDATE_INTERVAL - elapsed)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Sleeping for {sleep_time:.0f} seconds (cycle took {elapsed:.1f}s)...")
+                time.sleep(sleep_time)
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Woke from sleep, starting next cycle...")
 
             except KeyboardInterrupt:

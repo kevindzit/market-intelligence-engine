@@ -48,6 +48,7 @@ restart_attempts = {}  # Track restart attempts per scraper
 scraper_start_times = {}  # Track when each scraper started
 orchestrator_start_time = None
 last_backup_time = None
+last_backup_attempt = None
 last_summary_time = None
 scraper_configs = {}
 scraper_modes = {}
@@ -58,6 +59,13 @@ oneshot_schedule = {}
 # Project root (handles launches from other directories)
 PROJECT_ROOT = Path(__file__).parent.resolve()
 
+# Load environment variables from .env so child scrapers inherit required keys
+DOTENV_PATH = PROJECT_ROOT / '.env'
+if DOTENV_PATH.exists():
+    load_dotenv(dotenv_path=DOTENV_PATH, override=False)
+else:
+    load_dotenv(override=False)  # Fallback to default search locations
+
 # Activity logging
 scraper_logs = defaultdict(lambda: deque(maxlen=10))  # Last 10 log lines per scraper
 scraper_activity = defaultdict(dict)  # Track key metrics per scraper
@@ -65,12 +73,16 @@ scraper_activity = defaultdict(dict)  # Track key metrics per scraper
 # Configuration
 MAX_RESTART_ATTEMPTS = 3
 BACKUP_INTERVAL_HOURS = 24
+BACKUP_RETRY_INTERVAL_MINUTES = 30
 SUMMARY_INTERVAL_MINUTES = 15
 MONITOR_INTERVAL_SECONDS = 30
 MAX_LOG_LINES_PER_SCRAPER = 10
 TWITTER_ACTIVITY_LOOKBACK_MINUTES = 20
 COOKIE_WARNING_MINUTES = 120
 COOKIE_STALE_MINUTES = 360
+DEFAULT_STAGGER_SECONDS = 2
+TWITTER_STAGGER_SECONDS = 5
+STREAMING_STAGGER_SECONDS = 1
 
 TWITTER_SOURCE_MAP = {
     'Twitter Meme Coins': 'memecoins',
@@ -82,6 +94,56 @@ TWITTER_SOURCE_MAP = {
     'Twitter Emerging': 'emerging',
     'Twitter Whale Tracker': 'whale_tracker'
 }
+
+SCRAPER_TABLE_KEYWORDS = {
+    'twitter': 'twitter_sentiment',
+    'binance ohlcv': 'crypto_ohlcv',
+    'order book': 'order_book_depth',
+    'funding': 'funding_rates',
+    'fear & greed': 'fear_greed_index',
+    'liquidation': 'liquidations',
+    'open interest': 'open_interest',
+    'sec edgar': 'sec_filings',
+    'senate': 'congressional_trades',
+    'house': 'congressional_trades',
+    'stablecoin': 'stablecoin_metrics',
+    'dex liquidity': 'dex_liquidity',
+    'exchange flows': 'exchange_flows',
+    'options volatility': 'options_volatility',
+    'options vol': 'options_volatility',
+    'tvl': 'defi_tvl_chains',
+    'bridge flow': 'bridge_flows',
+    'bridge flows': 'bridge_flows',
+    'newsapi': 'news_articles',
+    'rss': 'news_articles'
+}
+
+TABLE_DEFAULT_THRESHOLD_MINUTES = {
+    'twitter_sentiment': 15,
+    'crypto_ohlcv': 10,
+    'news_articles': 30,
+    'order_book_depth': 5,
+    'funding_rates': 90,
+    'fear_greed_index': 1500,
+    'liquidations': 60,
+    'open_interest': 90,
+    'congressional_trades': 10080,
+    'sec_filings': 1440,
+    'stablecoin_metrics': 60,
+    'dex_liquidity': 60,
+    'exchange_flows': 60,
+    'options_volatility': 90,
+    'defi_tvl_chains': 90,
+    'bridge_flows': 90
+}
+
+TABLE_MIN_THRESHOLD_OVERRIDES = {
+    # Binance order book constantly streams, but inserts can be bursty.
+    'order_book_depth': 12
+}
+
+STALENESS_INTERVAL_MULTIPLIER = 3
+MIN_DYNAMIC_THRESHOLD_MINUTES = 5
 
 
 def cleanup_cookie_locks(max_age_seconds=300):
@@ -113,7 +175,7 @@ def cleanup_cookie_locks(max_age_seconds=300):
 
 
 def get_cookie_file_stats():
-    """Return cookie file freshness information for dashboard display."""
+    """Return pool cookie freshness info, filtering out fallback/backup files."""
     cookies_dir = PROJECT_ROOT / "cookies"
     if not cookies_dir.exists():
         return []
@@ -121,7 +183,19 @@ def get_cookie_file_stats():
     stats = []
     now = datetime.now()
 
-    for path in cookies_dir.glob('cookies*.json'):
+    prefix = 'cookies_account'
+    suffix = '.json'
+
+    for path in cookies_dir.glob(f'{prefix}*.json'):
+        name = path.name
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+
+        number_part = name[len(prefix):-len(suffix)]
+        if not number_part.isdigit():
+            continue
+
+        account_num = int(number_part)
         try:
             mtime = datetime.fromtimestamp(path.stat().st_mtime)
         except OSError:
@@ -129,13 +203,14 @@ def get_cookie_file_stats():
 
         age_minutes = max((now - mtime).total_seconds() / 60, 0)
         stats.append({
-            'name': path.name,
+            'name': name,
+            'account_num': account_num,
             'updated_at': mtime,
             'age_minutes': age_minutes,
-            'is_primary': path.name == 'cookies.json'
+            'is_primary': False,
         })
 
-    stats.sort(key=lambda entry: (0 if entry['is_primary'] else 1, entry['name']))
+    stats.sort(key=lambda entry: entry['account_num'])
     return stats
 
 
@@ -200,6 +275,65 @@ def parse_interval_seconds(interval_str):
     return 5 * 60
 
 
+def map_scraper_to_table(scraper_name):
+    """Return the table that should receive data for the given scraper name."""
+    if not scraper_name:
+        return None
+    lower_name = scraper_name.lower()
+    for keyword, table in SCRAPER_TABLE_KEYWORDS.items():
+        if keyword in lower_name:
+            return table
+    return None
+
+
+def get_start_stagger_seconds(scraper):
+    """Return a safe-but-fast stagger delay for starting scrapers."""
+    if not scraper:
+        return DEFAULT_STAGGER_SECONDS
+
+    # Explicit override wins if present in config
+    override = scraper.get('stagger_seconds')
+    if isinstance(override, (int, float)) and override >= 0:
+        return float(override)
+
+    name = scraper.get('name', '').lower()
+    if 'twitter' in name:
+        # Leave spacing to avoid simultaneous login/search bursts on the pool
+        return max(DEFAULT_STAGGER_SECONDS, TWITTER_STAGGER_SECONDS)
+
+    if any(key in name for key in ['order book', 'liquidation', 'ohlcv', 'open interest']):
+        # Streaming/public APIs tolerate tight spacing
+        return STREAMING_STAGGER_SECONDS
+
+    return DEFAULT_STAGGER_SECONDS
+
+
+def build_table_thresholds(scrapers):
+    """Derive per-table freshness thresholds from scraper intervals."""
+    table_thresholds = {}
+    for scraper in scrapers:
+        if not scraper.get('enabled'):
+            continue
+        table = map_scraper_to_table(scraper.get('name'))
+        if not table:
+            continue
+
+        interval_seconds = parse_interval_seconds(scraper.get('interval'))
+        interval_minutes = max(interval_seconds / 60, 1 / 60)
+        threshold_minutes = max(
+            interval_minutes * STALENESS_INTERVAL_MULTIPLIER,
+            MIN_DYNAMIC_THRESHOLD_MINUTES
+        )
+        if table in TABLE_MIN_THRESHOLD_OVERRIDES:
+            threshold_minutes = max(threshold_minutes, TABLE_MIN_THRESHOLD_OVERRIDES[table])
+
+        existing = table_thresholds.get(table)
+        if existing is None or threshold_minutes > existing:
+            table_thresholds[table] = threshold_minutes
+
+    return table_thresholds
+
+
 # ============================================================================
 # DATABASE MONITORING
 # ============================================================================
@@ -221,7 +355,19 @@ class DatabaseMonitor:
             'fear_greed_index': 'scraped_at',
             'liquidations': 'timestamp',
             'open_interest': 'scraped_at',
-            'sec_filings': 'scraped_at'
+            'sec_filings': 'scraped_at',
+            'stablecoin_metrics': 'scraped_at',
+            'dex_liquidity': 'scraped_at',
+            'exchange_flows': 'scraped_at',
+            'options_volatility': 'scraped_at',
+            'defi_tvl_chains': 'scraped_at',
+            'bridge_flows': 'scraped_at'
+        }
+        self.base_thresholds = dict(TABLE_DEFAULT_THRESHOLD_MINUTES)
+        self.table_thresholds = dict(self.base_thresholds)
+        self.heartbeat_map = {
+            'sec_filings': 'SEC EDGAR Reader',
+            'exchange_flows': 'Exchange Flows'
         }
 
     def _open_connection(self):
@@ -262,6 +408,7 @@ class DatabaseMonitor:
         try:
             with closing(self._open_connection()) as conn:
                 with conn.cursor() as cursor:
+                    heartbeat_cache = self._fetch_heartbeats(cursor)
                     for table, time_col in self.tables_to_monitor.items():
                         try:
                             cursor.execute(f"SELECT COUNT(*) FROM {table}")
@@ -269,6 +416,12 @@ class DatabaseMonitor:
 
                             cursor.execute(f"SELECT MAX({time_col}) FROM {table}")
                             last_update = cursor.fetchone()[0]
+
+                            heartbeat_name = self.heartbeat_map.get(table)
+                            if heartbeat_name:
+                                hb_ts = heartbeat_cache.get(heartbeat_name)
+                                if hb_ts and (not last_update or hb_ts > last_update):
+                                    last_update = hb_ts
 
                             change = count - self.last_row_counts.get(table, count)
                             self.last_row_counts[table] = count
@@ -287,6 +440,259 @@ class DatabaseMonitor:
             return None
 
         return stats
+
+    def _fetch_heartbeats(self, cursor):
+        """Load all scraper heartbeat timestamps."""
+        try:
+            cursor.execute("SELECT scraper_name, last_run FROM scraper_heartbeats")
+            return {row[0]: row[1] for row in cursor.fetchall()}
+        except Exception:
+            return {}
+
+    def get_stablecoin_snapshot(self):
+        """Return latest stablecoin metrics for dashboard display."""
+        if not self.dsn:
+            return None
+
+        query = """
+            SELECT symbol,
+                   market_cap,
+                   total_volume_24h,
+                   velocity_ratio,
+                   supply_change_pct_24h,
+                   price_deviation_pct,
+                   timestamp
+            FROM (
+                SELECT symbol,
+                       market_cap,
+                       total_volume_24h,
+                       velocity_ratio,
+                       supply_change_pct_24h,
+                       price_deviation_pct,
+                       timestamp,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY timestamp DESC) AS rn
+                FROM stablecoin_metrics
+            ) latest
+            WHERE rn = 1
+        """
+
+        try:
+            with closing(self._open_connection()) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query)
+                    rows = cursor.fetchall()
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        total_mcap = 0
+        total_volume = 0
+        velocity_values = []
+        supply_alerts = []
+        depeg_alerts = []
+
+        for symbol, mcap, vol, velocity, supply_pct, dev_pct, _ in rows:
+            if mcap:
+                total_mcap += float(mcap)
+            if vol:
+                total_volume += float(vol)
+            if velocity:
+                velocity_values.append(float(velocity))
+
+            if supply_pct is not None and abs(supply_pct) >= 1:
+                supply_alerts.append((symbol, float(supply_pct)))
+
+            if dev_pct is not None and abs(dev_pct) >= 0.5:
+                depeg_alerts.append((symbol, float(dev_pct)))
+
+        avg_velocity = sum(velocity_values) / len(velocity_values) if velocity_values else 0
+        supply_alerts.sort(key=lambda x: abs(x[1]), reverse=True)
+        depeg_alerts.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        return {
+            'total_market_cap': total_mcap,
+            'total_volume': total_volume,
+            'avg_velocity': avg_velocity,
+            'supply_alerts': supply_alerts[:3],
+            'depeg_alerts': depeg_alerts[:3]
+        }
+
+    def get_dex_snapshot(self, lookback_minutes=120):
+        """Return aggregated DEX liquidity stats."""
+        if not self.dsn:
+            return None
+
+        query = """
+            SELECT token,
+                   SUM(liquidity_usd) AS liquidity,
+                   SUM(volume_24h) AS volume,
+                   AVG(volume_to_liquidity_ratio) AS ratio,
+                   MAX(scraped_at) AS last_time
+            FROM dex_liquidity
+            WHERE scraped_at >= NOW() - INTERVAL %s
+            GROUP BY token
+            ORDER BY volume DESC
+            LIMIT 5
+        """
+
+        interval = f"{lookback_minutes} minutes"
+        try:
+            with closing(self._open_connection()) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, (interval,))
+                    rows = cursor.fetchall()
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        data = []
+        for token, liquidity, volume, ratio, last_time in rows:
+            data.append({
+                'token': token,
+                'liquidity': float(liquidity or 0),
+                'volume': float(volume or 0),
+                'ratio': float(ratio or 0),
+                'last_time': last_time
+            })
+
+        return {
+            'top_tokens': data,
+            'lookback_minutes': lookback_minutes
+        }
+
+    def get_exchange_flow_snapshot(self, lookback_hours=6):
+        """Return recent exchange flows."""
+        if not self.dsn:
+            return None
+
+        query = """
+            SELECT token, flow_type, usd_value, exchange, is_smart_money, signal_strength, timestamp
+            FROM exchange_flows
+            WHERE timestamp >= NOW() - INTERVAL %s
+            ORDER BY timestamp DESC
+            LIMIT 5
+        """
+
+        interval = f"{lookback_hours} hours"
+        try:
+            with closing(self._open_connection()) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(query, (interval,))
+                    rows = cursor.fetchall()
+        except Exception:
+            return None
+
+        if not rows:
+            return None
+
+        flows = []
+        for token, flow_type, usd_value, exchange, is_smart, strength, ts in rows:
+            flows.append({
+                'token': token,
+                'flow_type': flow_type,
+                'usd_value': float(usd_value or 0),
+                'exchange': exchange,
+                'is_smart': bool(is_smart),
+                'strength': float(strength or 0),
+                'timestamp': ts
+            })
+
+        return {
+            'recent_flows': flows,
+            'lookback_hours': lookback_hours
+        }
+
+    def get_twitter_collection_stats(self):
+        """Return Twitter collection statistics for various time periods."""
+        if not self.dsn:
+            return None
+
+        stats = {}
+
+        try:
+            with closing(self._open_connection()) as conn:
+                with conn.cursor() as cursor:
+                    # Last 15 minutes
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM twitter_sentiment
+                        WHERE scraped_at >= NOW() - INTERVAL '15 minutes'
+                    """)
+                    stats['last_15min'] = cursor.fetchone()[0]
+
+                    # Last hour
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM twitter_sentiment
+                        WHERE scraped_at >= NOW() - INTERVAL '1 hour'
+                    """)
+                    last_hour_count = cursor.fetchone()[0]
+                    if last_hour_count > 0:
+                        stats['last_hour'] = last_hour_count
+                        stats['last_hour_avg'] = last_hour_count / 4.0
+
+                    # Get uptime to determine what breakdowns to show
+                    if not orchestrator_start_time:
+                        return stats
+
+                    uptime_hours = (datetime.now() - orchestrator_start_time).total_seconds() / 3600
+
+                    # Hourly breakdown (show if uptime > 1 hour, up to last 6 hours)
+                    if uptime_hours >= 1:
+                        max_hours = min(int(uptime_hours) + 1, 6)
+                        hourly_breakdown = []
+
+                        for hour in range(max_hours):
+                            cursor.execute("""
+                                SELECT COUNT(*) FROM twitter_sentiment
+                                WHERE scraped_at >= NOW() - INTERVAL %s
+                                  AND scraped_at < NOW() - INTERVAL %s
+                            """, (f'{hour+1} hours', f'{hour} hours'))
+
+                            count = cursor.fetchone()[0]
+                            if hour == 0:
+                                label = "Current hour"
+                            elif hour == 1:
+                                label = "1 hour ago"
+                            else:
+                                label = f"{hour} hours ago"
+
+                            hourly_breakdown.append({'label': label, 'count': count})
+
+                        if hourly_breakdown:
+                            stats['hourly_breakdown'] = hourly_breakdown
+
+                    # Daily breakdown (show if uptime > 24 hours, up to last 7 days)
+                    if uptime_hours >= 24:
+                        max_days = min(int(uptime_hours / 24) + 1, 7)
+                        daily_breakdown = []
+
+                        for day in range(max_days):
+                            cursor.execute("""
+                                SELECT COUNT(*) FROM twitter_sentiment
+                                WHERE scraped_at >= NOW() - INTERVAL %s
+                                  AND scraped_at < NOW() - INTERVAL %s
+                            """, (f'{day+1} days', f'{day} days'))
+
+                            count = cursor.fetchone()[0]
+                            if day == 0:
+                                label = "Today"
+                            elif day == 1:
+                                label = "Yesterday"
+                            else:
+                                label = f"{day} days ago"
+
+                            daily_breakdown.append({'label': label, 'count': count})
+
+                        if daily_breakdown:
+                            stats['daily_breakdown'] = daily_breakdown
+
+        except Exception:
+            return None
+
+        return stats if stats else None
 
     def get_recent_twitter_activity(self, minutes=TWITTER_ACTIVITY_LOOKBACK_MINUTES):
         """Aggregate recent twitter_sentiment inserts per scraper source."""
@@ -341,26 +747,12 @@ class DatabaseMonitor:
         warnings = []
         now = datetime.now()
 
-        # Define staleness thresholds (in minutes)
-        thresholds = {
-            'twitter_sentiment': 15,   # Should update every 5-10 min
-            'crypto_ohlcv': 10,          # Every 5 min
-            'news_articles': 30,         # Every 15 min
-            'order_book_depth': 5,       # Every 30 seconds
-            'funding_rates': 90,         # Every hour
-            'fear_greed_index': 1500,    # Once per day
-            'liquidations': 60,          # Variable
-            'open_interest': 90,         # Every hour
-            'congressional_trades': 10080,  # Weekly
-            'sec_filings': 1440          # Daily
-        }
-
         for table, data in stats.items():
             if 'error' in data or not data.get('last_update'):
                 continue
 
             age = (now - data['last_update'].replace(tzinfo=None)).total_seconds() / 60
-            threshold = thresholds.get(table, 60)
+            threshold = self.table_thresholds.get(table, TABLE_DEFAULT_THRESHOLD_MINUTES.get(table, 60))
 
             if age > threshold:
                 warnings.append((table, age))
@@ -370,6 +762,14 @@ class DatabaseMonitor:
     def close(self):
         """Marker for compatibility (connections are short-lived)."""
         self.dsn = None
+
+    def set_table_thresholds(self, custom_thresholds=None):
+        """Update freshness thresholds using defaults plus any custom overrides."""
+        merged = dict(self.base_thresholds)
+        if custom_thresholds:
+            for table, minutes in custom_thresholds.items():
+                merged[table] = max(merged.get(table, 0), minutes)
+        self.table_thresholds = merged
 
 
 # ============================================================================
@@ -776,7 +1176,7 @@ def run_preflight_checks():
 # STATUS DASHBOARD
 # ============================================================================
 
-def display_dashboard(scrapers, db_stats=None, twitter_activity=None, cookie_stats=None):
+def display_dashboard(scrapers, db_stats=None, twitter_activity=None, cookie_stats=None, table_thresholds=None):
     """Display enhanced status dashboard with colors and metrics."""
     print(f"\n{'='*80}")
     print(f"{Fore.CYAN}{Style.BRIGHT}{'PJX TRADING SYSTEM - ORCHESTRATOR DASHBOARD':^80}{Style.RESET_ALL}")
@@ -845,6 +1245,9 @@ def display_dashboard(scrapers, db_stats=None, twitter_activity=None, cookie_sta
         print(f"{'TABLE':<28} {'ROWS':<15} {'CHANGE':<12} {'FRESHNESS':<15}")
         print(f"{'-'*80}")
 
+        # Choose thresholds: prefer dynamic thresholds passed in, else defaults
+        threshold_map = table_thresholds or TABLE_DEFAULT_THRESHOLD_MINUTES
+
         for table, stats in sorted(db_stats.items()):
             if 'error' in stats:
                 print(f"{table:<28} {Fore.RED}ERROR: {stats['error'][:30]}{Style.RESET_ALL}")
@@ -863,10 +1266,11 @@ def display_dashboard(scrapers, db_stats=None, twitter_activity=None, cookie_sta
             # Freshness indicator
             if stats['last_update']:
                 age_min = (datetime.now() - stats['last_update'].replace(tzinfo=None)).total_seconds() / 60
-
-                if age_min < 10:
-                    fresh = f"{Fore.GREEN}✓ Fresh (<10m){Style.RESET_ALL}"
-                elif age_min < 30:
+                threshold = threshold_map.get(table, TABLE_DEFAULT_THRESHOLD_MINUTES.get(table, 60))
+                # Use table-aware thresholds for color coding
+                if age_min <= threshold * 0.5:
+                    fresh = f"{Fore.GREEN}✓ Fresh ({age_min:.0f}m){Style.RESET_ALL}"
+                elif age_min <= threshold:
                     fresh = f"{Fore.YELLOW}○ Aging ({age_min:.0f}m){Style.RESET_ALL}"
                 else:
                     fresh = f"{Fore.RED}✗ Stale ({age_min:.0f}m){Style.RESET_ALL}"
@@ -1042,8 +1446,8 @@ def display_dashboard(scrapers, db_stats=None, twitter_activity=None, cookie_sta
             else:
                 color = Fore.GREEN
                 status = 'Fresh'
-            marker = '*' if entry['is_primary'] else ' '
-            print(f"  {marker} {entry['name']:<22} {color}{status:<6}{Style.RESET_ALL} updated {format_time_since(last_updated)}")
+            label = f"A{entry.get('account_num', '?')}"
+            print(f"  {label:<4} {entry['name']:<22} {color}{status:<6}{Style.RESET_ALL} updated {format_time_since(last_updated)}")
 
     print(f"\n{'='*80}\n")
 
@@ -1067,36 +1471,23 @@ def get_scraper_uptime(scraper_name):
 # STUCK SCRAPER DETECTION
 # ============================================================================
 
-def detect_stuck_scrapers(db_monitor):
+def detect_stuck_scrapers(db_monitor, stats=None, warnings=None):
     """Detect scrapers that are running but not producing data."""
     if not db_monitor:
         return []
 
-    stats = db_monitor.get_table_stats()
+    if stats is None:
+        stats = db_monitor.get_table_stats()
     if not stats:
         return []
 
+    if warnings is None:
+        warnings = db_monitor.check_data_freshness(stats)
+
     stuck = []
-    warnings = db_monitor.check_data_freshness(stats)
-
-    # Map tables to scrapers that should be updating them
-    scraper_table_map = {
-        'Twitter': 'twitter_sentiment',
-        'Binance OHLCV': 'crypto_ohlcv',
-        'NewsAPI': 'news_articles',
-        'RSS': 'news_articles',
-        'Order Book': 'order_book_depth',
-        'Funding': 'funding_rates'
-    }
-
     for name, process in running_processes.items():
         if process and process.poll() is None:  # Running
-            # Find which table this scraper should update
-            table = None
-            for scraper_key, table_name in scraper_table_map.items():
-                if scraper_key in name:
-                    table = table_name
-                    break
+            table = map_scraper_to_table(name)
 
             if table:
                 # Check if this table is in warnings
@@ -1106,6 +1497,18 @@ def detect_stuck_scrapers(db_monitor):
                         break
 
     return stuck
+
+
+# ============================================================================
+# ONESHOT SCHEDULING HELPERS
+# ============================================================================
+
+def schedule_next_oneshot_run(name, reference_time=None):
+    """Compute the next run time for a one-shot scraper."""
+    if reference_time is None:
+        reference_time = datetime.now()
+    interval = scraper_intervals.get(name, 24 * 60 * 60)
+    oneshot_status[name]['next_run'] = reference_time + timedelta(seconds=interval)
 
 
 # ============================================================================
@@ -1172,6 +1575,74 @@ def print_summary_stats(db_monitor):
         time_until = next_backup - datetime.now()
         hours_until = time_until.total_seconds() / 3600
         print(f"\n{Fore.CYAN}Next Backup:{Style.RESET_ALL} {hours_until:.1f} hours")
+
+    # Stablecoin snapshot
+    stablecoin_snapshot = db_monitor.get_stablecoin_snapshot()
+    if stablecoin_snapshot:
+        print(f"\n{Fore.CYAN}Stablecoin Liquidity:{Style.RESET_ALL}")
+        print(f"  • Total Market Cap: ${stablecoin_snapshot['total_market_cap']:,.0f}")
+        print(f"  • Total Volume 24h: ${stablecoin_snapshot['total_volume']:,.0f}")
+        print(f"  • Avg Velocity: {stablecoin_snapshot['avg_velocity']:.3f}x")
+        if stablecoin_snapshot['supply_alerts']:
+            alerts = ', '.join(
+                f"{sym} {pct:+.2f}%"
+                for sym, pct in stablecoin_snapshot['supply_alerts']
+            )
+            print(f"  • Supply Shifts: {alerts}")
+        if stablecoin_snapshot['depeg_alerts']:
+            alerts = ', '.join(
+                f"{sym} {pct:+.2f}%"
+                for sym, pct in stablecoin_snapshot['depeg_alerts']
+            )
+            print(f"  • De-peg Watch: {alerts}")
+
+    # DEX summary
+    dex_snapshot = db_monitor.get_dex_snapshot()
+    if dex_snapshot and dex_snapshot['top_tokens']:
+        print(f"\n{Fore.CYAN}DEX Liquidity (last {dex_snapshot['lookback_minutes']}m):{Style.RESET_ALL}")
+        for entry in dex_snapshot['top_tokens']:
+            print(
+                f"  • {entry['token']}: "
+                f"Liquidity ${entry['liquidity']:,.0f}, "
+                f"Volume ${entry['volume']:,.0f}, "
+                f"V/L {entry['ratio']:.2f}"
+            )
+
+    # Twitter collection stats
+    twitter_stats = db_monitor.get_twitter_collection_stats()
+    if twitter_stats:
+        print(f"\n{Fore.CYAN}Twitter Collection Stats:{Style.RESET_ALL}")
+
+        # Last 15 minutes
+        if 'last_15min' in twitter_stats:
+            print(f"  • Last 15 min: {Fore.GREEN}{twitter_stats['last_15min']:,} tweets{Style.RESET_ALL}")
+
+        # Last hour (if we have 4+ 15-min intervals)
+        if 'last_hour' in twitter_stats:
+            print(f"  • Last hour: {Fore.GREEN}{twitter_stats['last_hour']:,} tweets{Style.RESET_ALL} ({twitter_stats['last_hour_avg']:.0f}/15min avg)")
+
+        # Hourly breakdown (if uptime > 1 hour)
+        if 'hourly_breakdown' in twitter_stats and twitter_stats['hourly_breakdown']:
+            print(f"  • Hourly breakdown:")
+            for hour_data in twitter_stats['hourly_breakdown']:
+                print(f"    - {hour_data['label']}: {hour_data['count']:,} tweets")
+
+        # Daily breakdown (if uptime > 24 hours)
+        if 'daily_breakdown' in twitter_stats and twitter_stats['daily_breakdown']:
+            print(f"  • Daily breakdown:")
+            for day_data in twitter_stats['daily_breakdown']:
+                print(f"    - {day_data['label']}: {day_data['count']:,} tweets")
+
+    # Exchange flow summary
+    flow_snapshot = db_monitor.get_exchange_flow_snapshot()
+    if flow_snapshot and flow_snapshot['recent_flows']:
+        print(f"\n{Fore.CYAN}Exchange Flows (last {flow_snapshot['lookback_hours']}h):{Style.RESET_ALL}")
+        for flow in flow_snapshot['recent_flows']:
+            smart_tag = " (Smart)" if flow['is_smart'] else ""
+            print(
+                f"  • {flow['token']} {flow['flow_type']} "
+                f"${flow['usd_value']:,.0f} via {flow['exchange']}{smart_tag}"
+            )
 
     print(f"{'='*80}\n")
 
@@ -1259,12 +1730,10 @@ def start_scraper(scraper):
             oneshot_status[name]['last_started'] = datetime.now()
             oneshot_status[name].pop('next_run', None)
 
-        # Start real-time output monitoring for Twitter scrapers
-        if 'twitter' in name.lower():
-            start_output_monitor_thread(process, name)
-            print(f"{Fore.GREEN}[STARTED] {name} (PID: {process.pid}) - Real-time monitoring enabled{Style.RESET_ALL}")
-        else:
-            print(f"{Fore.GREEN}[STARTED] {name} (PID: {process.pid}){Style.RESET_ALL}")
+        # Start real-time output monitoring for every scraper
+        start_output_monitor_thread(process, name)
+        monitor_note = " - Real-time monitoring enabled" if 'twitter' in name.lower() else ""
+        print(f"{Fore.GREEN}[STARTED] {name} (PID: {process.pid}){monitor_note}{Style.RESET_ALL}")
 
         return process
 
@@ -1310,10 +1779,13 @@ def stop_all_scrapers():
 
 def run_database_backup():
     """Run database backup script."""
-    global last_backup_time
+    global last_backup_time, last_backup_attempt
 
     try:
-        print(f"\n{Fore.CYAN}[BACKUP] Starting daily database backup at {datetime.now().strftime('%H:%M:%S')}{Style.RESET_ALL}")
+        attempt_time = datetime.now()
+        last_backup_attempt = attempt_time
+
+        print(f"\n{Fore.CYAN}[BACKUP] Starting daily database backup at {attempt_time.strftime('%H:%M:%S')}{Style.RESET_ALL}")
 
         python_exe = get_python_executable()
         backup_script = PROJECT_ROOT / "scripts/backup_postgres.py"
@@ -1331,7 +1803,7 @@ def run_database_backup():
 
         if result.returncode == 0:
             print(f"{Fore.GREEN}[BACKUP] Database backup completed successfully{Style.RESET_ALL}")
-            last_backup_time = datetime.now()
+            last_backup_time = attempt_time
             return True
         else:
             print(f"{Fore.RED}[ERROR] Backup failed with exit code {result.returncode}{Style.RESET_ALL}")
@@ -1344,13 +1816,23 @@ def run_database_backup():
 
 def should_run_backup():
     """Check if it's time to run a backup."""
-    global last_backup_time
+    global last_backup_time, last_backup_attempt
+
+    now = datetime.now()
+    retry_interval = timedelta(minutes=BACKUP_RETRY_INTERVAL_MINUTES)
 
     if last_backup_time is None:
+        if last_backup_attempt is None:
+            return True
+        return now - last_backup_attempt >= retry_interval
+
+    if now - last_backup_time < timedelta(hours=BACKUP_INTERVAL_HOURS):
+        return False
+
+    if last_backup_attempt is None:
         return True
 
-    time_since_backup = datetime.now() - last_backup_time
-    return time_since_backup >= timedelta(hours=BACKUP_INTERVAL_HOURS)
+    return now - last_backup_attempt >= retry_interval
 
 
 def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
@@ -1361,6 +1843,8 @@ def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
     if allowed_names:
         scrapers = [s for s in scrapers if s['name'] in allowed_names]
     scraper_configs = {s['name']: s for s in scrapers}
+    if db_monitor:
+        db_monitor.set_table_thresholds(build_table_thresholds(scrapers))
     scrapers_dict = {
         s['name']: s
         for s in scrapers
@@ -1378,16 +1862,19 @@ def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
             db_stats = None
             twitter_db_activity = None
             cookie_stats = get_cookie_file_stats()
+            freshness_warnings = None
             if db_monitor:
                 db_stats = db_monitor.get_table_stats()
                 twitter_db_activity = db_monitor.get_recent_twitter_activity()
+                if db_stats:
+                    freshness_warnings = db_monitor.check_data_freshness(db_stats)
 
             # Display dashboard
-            display_dashboard(scrapers, db_stats, twitter_db_activity, cookie_stats)
+            display_dashboard(scrapers, db_stats, twitter_db_activity, cookie_stats, table_thresholds=db_monitor.table_thresholds if db_monitor else None)
 
             # Check for stuck scrapers
             if db_monitor:
-                stuck = detect_stuck_scrapers(db_monitor)
+                stuck = detect_stuck_scrapers(db_monitor, stats=db_stats, warnings=freshness_warnings)
                 if stuck:
                     for name, age in stuck:
                         print(f"{Fore.YELLOW}[WARNING] {name} hasn't updated data in {age:.0f} minutes{Style.RESET_ALL}")
@@ -1403,9 +1890,7 @@ def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
                         print(f"{Fore.CYAN}[COMPLETE] {name} finished run at {completion_time.strftime('%H:%M:%S')}{Style.RESET_ALL}")
                         restart_attempts[name] = 0
                         oneshot_status[name]['last_completed'] = completion_time
-                        interval = scraper_intervals.get(name, 24 * 60 * 60)
-                        next_run = completion_time + timedelta(seconds=interval)
-                        oneshot_status[name]['next_run'] = next_run
+                        schedule_next_oneshot_run(name, completion_time)
                         running_processes.pop(name, None)
                         scraper_start_times.pop(name, None)
                         continue
@@ -1430,6 +1915,10 @@ def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
                     else:
                         print(f"{Fore.RED}[FATAL] {name} has crashed {MAX_RESTART_ATTEMPTS} times. Giving up.{Style.RESET_ALL}")
                         del running_processes[name]
+                        if mode == 'oneshot':
+                            failure_time = datetime.now()
+                            oneshot_status[name]['last_failed'] = failure_time
+                            schedule_next_oneshot_run(name, failure_time)
 
             # Schedule one-shot scrapers for their next run
             now = datetime.now()
@@ -1494,6 +1983,8 @@ def main(args=None):
     scrapers = load_config()
     scraper_configs = {s['name']: s for s in scrapers}
     enabled_scrapers = [s for s in scrapers if s.get('enabled', False)]
+    if db_monitor:
+        db_monitor.set_table_thresholds(build_table_thresholds(scrapers))
 
     if diag_pattern:
         filtered = [s for s in enabled_scrapers if diag_pattern in s['name'].lower()]
@@ -1527,10 +2018,12 @@ def main(args=None):
         if process:
             running_processes[name] = process
 
-        # Stagger starts by 10 seconds to avoid rate limit collisions
+        # Stagger starts to reduce burst risk while keeping startup quick
         if i < len(enabled_scrapers) - 1:
-            print(f"{Fore.WHITE}[WAIT] Waiting 10 seconds before starting next scraper...{Style.RESET_ALL}")
-            time.sleep(10)
+            delay = get_start_stagger_seconds(scraper)
+            if delay > 0:
+                print(f"{Fore.WHITE}[WAIT] Waiting {delay:.0f} seconds before starting next scraper...{Style.RESET_ALL}")
+                time.sleep(delay)
 
     if not running_processes:
         print(f"\n{Fore.RED}[ERROR] No scrapers started successfully!{Style.RESET_ALL}")

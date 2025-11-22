@@ -5,8 +5,8 @@ Provides smart data aggregation with AI-directed exploration capabilities
 
 import psycopg2
 import psycopg2.extras
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional, Any, Iterable
 import json
 import numpy as np
 from collections import defaultdict
@@ -35,6 +35,24 @@ MIN_WIN_RATE_FOR_BEARISH = 35   # Below 35% win rate = bearish signal
 # Correlation analysis - sample size validation
 MIN_CORRELATION_DATA_POINTS_RELIABLE = 100   # Need 100+ data points for reliable correlation
 MIN_CORRELATION_DATA_POINTS_MINIMUM = 30     # Absolute minimum 30 data points
+
+# Default freshness queries (in minutes) for critical feeds
+FEED_FRESHNESS_QUERIES: Dict[str, str] = {
+    'crypto_ohlcv': "SELECT MAX(timestamp) FROM crypto_ohlcv",
+    'twitter_sentiment': "SELECT MAX(scraped_at) FROM twitter_sentiment",
+    'order_book_depth': "SELECT MAX(timestamp) FROM order_book_depth",
+    'liquidations': "SELECT MAX(timestamp) FROM liquidations",
+    'open_interest': "SELECT MAX(timestamp) FROM open_interest",
+    'news_articles': "SELECT MAX(published_at) FROM news_articles",
+}
+
+SIGNAL_CONFIDENCE_MAP = {
+    'STRONG BUY': 0.9,
+    'BUY': 0.8,
+    'SELL': 0.75,
+    'PUMP WARNING': 0.7,
+    'HOLD': 0.6,
+}
 
 class DataIntelligence:
     """
@@ -196,7 +214,7 @@ class DataIntelligence:
 
                 rows = cursor.fetchall()
                 if not rows:
-                    return {}
+                    return {'has_data': False}
 
                 prices = [float(row[4]) for row in rows]
                 volumes = [float(row[5]) for row in rows]
@@ -213,11 +231,221 @@ class DataIntelligence:
                     'volume_24h': sum(volumes),
                     'avg_volume': np.mean(volumes) if volumes else 0,
                     'volatility': np.std(prices) / np.mean(prices) * 100 if len(prices) > 1 else 0,
-                    'price_points': len(rows)
+                    'price_points': len(rows),
+                    'has_data': True,
                 }
         except Exception as e:
             print(f"[ERROR] Price history failed for {token}: {e}")
-            return {}
+            return {'has_data': False}
+
+    def get_token_data_freshness(self, token: str) -> Dict[str, Optional[float]]:
+        """Return age (in minutes) of recent price and sentiment data."""
+        def _minutes_since(ts: Optional[datetime]) -> Optional[float]:
+            if not ts:
+                return None
+            if ts.tzinfo:
+                now_utc = datetime.now(timezone.utc)
+                delta = now_utc - ts.astimezone(timezone.utc)
+            else:
+                now_utc = datetime.utcnow()
+                delta = now_utc - ts
+            return max(delta.total_seconds() / 60.0, 0.0)
+
+        freshness = {
+            'price_minutes': None,
+            'sentiment_minutes': None,
+        }
+
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT MAX(timestamp) FROM crypto_ohlcv WHERE token = %s",
+                    (token,),
+                )
+                price_ts = cursor.fetchone()[0]
+                freshness['price_minutes'] = _minutes_since(price_ts)
+
+                cursor.execute(
+                    "SELECT MAX(scraped_at) FROM twitter_sentiment WHERE token = %s",
+                    (token,),
+                )
+                sentiment_ts = cursor.fetchone()[0]
+                freshness['sentiment_minutes'] = _minutes_since(sentiment_ts)
+
+        except Exception as e:
+            print(f"[ERROR] Data freshness check failed for {token}: {e}")
+
+        return freshness
+
+    def get_volume_profile(self, token: str, hours: int = 24) -> Dict:
+        """Aggregate volume metrics with recent-vs-baseline comparison."""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT
+                        SUM(volume) AS total_volume,
+                        AVG(volume) AS avg_volume,
+                        MAX(volume) AS max_volume,
+                        MIN(volume) AS min_volume,
+                        COUNT(*) AS candles,
+                        AVG(close) AS avg_price
+                    FROM crypto_ohlcv
+                    WHERE token = %s
+                      AND timestamp >= NOW() - INTERVAL '1 hour' * %s
+                """, (token, hours))
+
+                stats = cursor.fetchone()
+                if not stats or not stats['candles']:
+                    return {'has_data': False}
+
+                recent_window = max(1, min(6, (hours // 4) or 1))
+                cursor.execute("""
+                    SELECT
+                        AVG(volume) AS avg_volume,
+                        SUM(volume) AS total_volume,
+                        COUNT(*) AS candles
+                    FROM crypto_ohlcv
+                    WHERE token = %s
+                      AND timestamp >= NOW() - INTERVAL '1 hour' * %s
+                """, (token, recent_window))
+
+                recent = cursor.fetchone() or {}
+
+                avg_volume = float(stats['avg_volume'] or 0)
+                total_volume = float(stats['total_volume'] or 0)
+                recent_avg = float(recent.get('avg_volume') or 0)
+                volume_ratio = (recent_avg / avg_volume) if avg_volume else 1.0
+                avg_price = float(stats['avg_price'] or 0)
+                total_volume_usd = total_volume * avg_price if avg_price else 0
+
+                return {
+                    'has_data': True,
+                    'window_hours': hours,
+                    'candles': int(stats['candles']),
+                    'total_volume': total_volume,
+                    'avg_volume': avg_volume,
+                    'max_volume': float(stats['max_volume'] or 0),
+                    'min_volume': float(stats['min_volume'] or 0),
+                    'avg_price': avg_price,
+                    'total_volume_usd': total_volume_usd,
+                    'recent_window_hours': recent_window,
+                    'recent_avg_volume': recent_avg,
+                    'volume_ratio': volume_ratio,
+                }
+        except Exception as e:
+            print(f"[ERROR] Volume profile failed for {token}: {e}")
+            return {'has_data': False}
+
+    def get_signal_candidates(self, limit: int = 15) -> List[Dict[str, Any]]:
+        """
+        Surface tokens with meaningful movements (social, volume, price).
+        """
+        candidates: Dict[str, Dict[str, Any]] = {}
+
+        def _ensure_entry(token: str) -> Dict[str, Any]:
+            entry = candidates.get(token)
+            if not entry:
+                entry = {'token': token, 'reasons': [], 'confidence': 0.6, 'payload': {}}
+                candidates[token] = entry
+            return entry
+
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT token, signal, volume_signal, quality_sentiment,
+                           high_impact_tweets, signal_time
+                    FROM twitter_trading_signals
+                    ORDER BY signal_time DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                for row in cursor.fetchall():
+                    token = row['token']
+                    entry = _ensure_entry(token)
+                    entry['reasons'].append(f"twitter_signal:{row.get('signal')}")
+                    signal_name = (row.get('signal') or '').upper().strip()
+                    confidence = SIGNAL_CONFIDENCE_MAP.get(signal_name, 0.65)
+                    entry['confidence'] = max(entry['confidence'], confidence)
+                    entry['payload']['twitter_signal'] = {
+                        'label': row.get('signal'),
+                        'volume_signal': row.get('volume_signal'),
+                        'quality_sentiment': row.get('quality_sentiment'),
+                        'high_impact_tweets': row.get('high_impact_tweets'),
+                    }
+        except Exception as e:
+            print(f"[WARNING] twitter_trading_signals unavailable: {e}")
+
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute(
+                    """
+                    SELECT token, max_spike, avg_sentiment, whale_count
+                    FROM recent_volume_spikes
+                    ORDER BY max_spike DESC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                for row in cursor.fetchall():
+                    token = row['token']
+                    entry = _ensure_entry(token)
+                    entry['reasons'].append("volume_spike")
+                    spike = float(row.get('max_spike') or 0)
+                    confidence = min(0.6 + max(spike - 2.0, 0) * 0.1, 0.85)
+                    entry['confidence'] = max(entry['confidence'], confidence)
+                    entry['payload']['volume_spike'] = {
+                        'ratio': spike,
+                        'avg_sentiment': row.get('avg_sentiment'),
+                        'whale_count': row.get('whale_count'),
+                    }
+        except Exception as e:
+            print(f"[WARNING] recent_volume_spikes unavailable: {e}")
+
+        sorted_candidates = sorted(
+            candidates.values(),
+            key=lambda item: item.get('confidence', 0),
+            reverse=True,
+        )
+        return sorted_candidates[:limit]
+
+    def get_feed_freshness(self, feeds: Optional[Iterable[str]] = None) -> Dict[str, Optional[float]]:
+        """
+        Return age in minutes for each requested feed (table).
+        """
+        def _minutes_since(ts: Optional[datetime]) -> Optional[float]:
+            if not ts:
+                return None
+            if ts.tzinfo:
+                delta = datetime.now(timezone.utc) - ts.astimezone(timezone.utc)
+            else:
+                delta = datetime.utcnow() - ts
+            return max(delta.total_seconds() / 60.0, 0.0)
+
+        queries = FEED_FRESHNESS_QUERIES
+        if feeds is not None:
+            feeds = list(feeds)
+            queries = {name: sql for name, sql in FEED_FRESHNESS_QUERIES.items() if name in feeds}
+
+        freshness: Dict[str, Optional[float]] = {name: None for name in queries}
+        if not queries:
+            return freshness
+
+        try:
+            with self.conn.cursor() as cursor:
+                for name, sql in queries.items():
+                    try:
+                        cursor.execute(sql)
+                        ts = cursor.fetchone()[0]
+                        freshness[name] = _minutes_since(ts)
+                    except Exception as feed_err:
+                        print(f"[ERROR] Freshness query failed for {name}: {feed_err}")
+                        freshness[name] = None
+        except Exception as e:
+            print(f"[ERROR] Feed freshness check failed: {e}")
+
+        return freshness
 
     def get_sentiment_summary(self, token: str, hours: int = 6) -> Dict:
         """Get Twitter sentiment summary with velocity metrics"""
@@ -346,7 +574,9 @@ class DataIntelligence:
         """
         summary = {
             'token': token,
-            'timestamp': datetime.now().isoformat()
+            'timestamp': datetime.now().isoformat(),
+            'has_sentiment_data': False,
+            'has_price_change': False,
         }
 
         # Get current price
@@ -371,6 +601,7 @@ class DataIntelligence:
                 summary['tweets_1h'] = sentiment['tweets_1h']
                 summary['sentiment_1h'] = float(sentiment['sentiment_1h']) if sentiment['sentiment_1h'] else 0
                 summary['volume_spike'] = float(sentiment['max_spike_1h']) if sentiment['max_spike_1h'] else 0
+                summary['has_sentiment_data'] = True
             else:
                 summary['tweets_1h'] = 0
                 summary['sentiment_1h'] = 0
@@ -386,8 +617,9 @@ class DataIntelligence:
             """, (token,))
 
             old_price = cursor.fetchone()
-            if old_price:
+            if old_price and old_price['close']:
                 summary['price_change_1h'] = ((price - float(old_price['close'])) / float(old_price['close']) * 100)
+                summary['has_price_change'] = True
             else:
                 summary['price_change_1h'] = 0
 
@@ -522,6 +754,59 @@ class DataIntelligence:
             print(f"[ERROR] Trending tokens fetch failed: {e}")
 
         return trending
+
+    def get_token_freshness(self, token: str, limits: Dict[str, int]) -> Dict[str, Optional[float]]:
+        """
+        Return per-feed age (minutes) for a given token. Only checks feeds provided in limits.
+        """
+        from datetime import timezone
+
+        now = datetime.now(timezone.utc)
+        ages: Dict[str, Optional[float]] = {}
+
+        def _age(query: str, params: tuple) -> Optional[float]:
+            with self.conn.cursor() as cursor:
+                cursor.execute(query, params)
+                row = cursor.fetchone()
+                ts = row[0] if row else None
+                if not ts:
+                    return None
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                return max((now - ts).total_seconds() / 60, 0)
+
+        for feed, _limit in limits.items():
+            if feed == 'crypto_ohlcv':
+                ages[feed] = _age(
+                    "SELECT MAX(timestamp) FROM crypto_ohlcv WHERE token = %s",
+                    (token,)
+                )
+            elif feed == 'twitter_sentiment':
+                ages[feed] = _age(
+                    "SELECT MAX(scraped_at) FROM twitter_sentiment WHERE token = %s",
+                    (token,)
+                )
+            elif feed == 'order_book_depth':
+                ages[feed] = _age(
+                    "SELECT MAX(timestamp) FROM order_book_depth WHERE token = %s",
+                    (token,)
+                )
+            elif feed == 'liquidations':
+                ages[feed] = _age(
+                    "SELECT MAX(timestamp) FROM liquidations WHERE token = %s",
+                    (token,)
+                )
+            elif feed == 'open_interest':
+                ages[feed] = _age(
+                    "SELECT MAX(scraped_at) FROM open_interest WHERE token = %s",
+                    (token,)
+                )
+            elif feed == 'news_articles':
+                ages[feed] = _age(
+                    "SELECT MAX(scraped_at) FROM news_articles WHERE token = %s",
+                    (token,)
+                )
+        return ages
 
     def analyze_sentiment_timing(self, token: str) -> Dict:
         """
@@ -1769,6 +2054,58 @@ class DataIntelligence:
             crash_signals += fg_score
             total_weight += 10
 
+            # 6. DEFI TVL OUTFLOWS (Weight: 15%) - NEW!
+            defi_tvl_score = 0
+            try:
+                defi_risk = self.check_defi_risk()
+                if defi_risk:
+                    risk_level = defi_risk.get('risk_level', 'UNKNOWN')
+                    if risk_level == 'HIGH':
+                        defi_tvl_score = 15
+                    elif risk_level == 'MODERATE':
+                        defi_tvl_score = 8
+
+                    indicators['defi_tvl'] = {
+                        'risk_level': risk_level,
+                        'protocols_losing': defi_risk.get('protocols_losing', 0),
+                        'position_adjustment': defi_risk.get('position_adjustment', 1.0),
+                        'score': defi_tvl_score
+                    }
+                    crash_signals += defi_tvl_score
+                    total_weight += 15
+            except:
+                pass  # Don't fail if DeFi data unavailable
+
+            # 7. OPTIONS VOLATILITY (Weight: 15%) - NEW!
+            options_vol_score = 0
+            try:
+                # Get volatility risk score from database function
+                vol_risk_score = self.get_volatility_risk_score()
+
+                # Convert 0-100 score to 0-15 points
+                if vol_risk_score >= 70:
+                    options_vol_score = 15
+                elif vol_risk_score >= 50:
+                    options_vol_score = 10
+                elif vol_risk_score >= 30:
+                    options_vol_score = 5
+
+                # Also get current options data for details
+                options_risk = self.check_options_risk()
+                options_data = self.get_options_volatility()
+
+                indicators['options_volatility'] = {
+                    'risk_score': vol_risk_score,
+                    'iv': options_data.get('btc_iv', 50) if options_data else 50,
+                    'regime': options_data.get('volatility_regime', 'UNKNOWN') if options_data else 'UNKNOWN',
+                    'bias': options_data.get('directional_bias', 'NEUTRAL') if options_data else 'NEUTRAL',
+                    'score': options_vol_score
+                }
+                crash_signals += options_vol_score
+                total_weight += 15
+            except:
+                pass  # Don't fail if options data unavailable
+
             # Calculate overall crash probability
             crash_probability = (crash_signals / total_weight * 100) if total_weight > 0 else 0
 
@@ -1806,6 +2143,10 @@ class DataIntelligence:
                 reasons.append(f"Market-wide selloff: {indicators['correlation']['tokens_dropping']} major tokens dropping")
             if indicators.get('fear_greed', {}).get('score', 0) >= 10:
                 reasons.append(f"Extreme fear sentiment: {indicators['fear_greed']['value']}/100")
+            if indicators.get('defi_tvl', {}).get('score', 0) >= 10:
+                reasons.append(f"DeFi capital exodus: {indicators['defi_tvl']['risk_level']} risk, {indicators['defi_tvl']['protocols_losing']} protocols losing")
+            if indicators.get('options_volatility', {}).get('score', 0) >= 10:
+                reasons.append(f"Options panic: IV={indicators['options_volatility']['iv']:.0f}%, regime={indicators['options_volatility']['regime']}")
 
             return {
                 'status': status,
@@ -1832,6 +2173,715 @@ class DataIntelligence:
                 'reasoning': f'Detection failed: {str(e)}',
                 'timestamp': datetime.now().isoformat()
             }
+
+    def get_stablecoin_metrics(self) -> Dict:
+        """Get stablecoin velocity and flow metrics (0.87 BTC correlation)"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # Get latest stablecoin metrics
+                cursor.execute("""
+                    SELECT
+                        SUM(market_cap) as total_mcap,
+                        AVG(velocity_ratio) as avg_velocity,
+                        SUM(supply_change_24h) as net_flow_24h,
+                        AVG(supply_change_pct_24h) as supply_change_pct,
+                        MAX(price_deviation_pct) as max_deviation
+                    FROM stablecoin_metrics
+                    WHERE timestamp > NOW() - INTERVAL '1 hour'
+                    AND symbol IN ('USDT', 'USDC', 'DAI')
+                """)
+
+                row = cursor.fetchone()
+                if not row or not row['total_mcap']:
+                    return None
+
+                # Interpret signals
+                signal = 'NEUTRAL'
+                if row['supply_change_pct'] and row['supply_change_pct'] > 2:
+                    signal = 'BULLISH_INFLOW'  # Money entering crypto
+                elif row['supply_change_pct'] and row['supply_change_pct'] < -2:
+                    signal = 'BEARISH_OUTFLOW'  # Money leaving crypto
+                elif row['avg_velocity'] and row['avg_velocity'] > 0.5:
+                    signal = 'HIGH_ACTIVITY'  # Volatility incoming
+
+                return {
+                    'total_mcap': float(row['total_mcap']) if row['total_mcap'] else 0,
+                    'avg_velocity': float(row['avg_velocity']) if row['avg_velocity'] else 0,
+                    'net_flow_24h': float(row['net_flow_24h']) if row['net_flow_24h'] else 0,
+                    'supply_change_pct': float(row['supply_change_pct']) if row['supply_change_pct'] else 0,
+                    'max_deviation': float(row['max_deviation']) if row['max_deviation'] else 0,
+                    'signal': signal
+                }
+        except Exception as e:
+            print(f"[WARNING] Failed to get stablecoin metrics: {e}")
+            return None
+
+    def get_smart_money_flows(self, token: str, hours: int = 6) -> Dict:
+        """Get Smart Money movement data (23% better stability signals)"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # Get Smart Money flows for specific token
+                cursor.execute("""
+                    SELECT
+                        SUM(CASE WHEN flow_type = 'INFLOW' THEN usd_value ELSE -usd_value END) as net_flow,
+                        COUNT(DISTINCT from_entity) + COUNT(DISTINCT to_entity) as entity_count,
+                        ARRAY_AGG(DISTINCT
+                            CASE WHEN from_entity != 'Unknown' THEN from_entity
+                                 WHEN to_entity != 'Unknown' THEN to_entity
+                            END
+                        ) as entities,
+                        MAX(signal_strength) as max_signal
+                    FROM exchange_flows
+                    WHERE token = %s
+                    AND timestamp > NOW() - INTERVAL '1 hour' * %s
+                    AND is_smart_money = true
+                """, (token, hours))
+
+                row = cursor.fetchone()
+                if not row or not row['net_flow']:
+                    return None
+
+                net_flow = float(row['net_flow'])
+
+                # Determine direction and action
+                if net_flow > 1000000:  # >$1M inflow
+                    direction = 'ACCUMULATING'
+                    recommended_action = 'BUY'
+                elif net_flow < -1000000:  # >$1M outflow
+                    direction = 'DISTRIBUTING'
+                    recommended_action = 'SELL'
+                elif abs(net_flow) > 100000:
+                    direction = 'ACTIVE'
+                    recommended_action = 'WATCH'
+                else:
+                    direction = 'NEUTRAL'
+                    recommended_action = 'HOLD'
+
+                # Clean entities list
+                entities = [e for e in (row['entities'] or []) if e and e != 'Unknown']
+
+                return {
+                    'net_flow': net_flow,
+                    'direction': direction,
+                    'entities': entities[:5],  # Top 5 entities
+                    'entity_count': row['entity_count'] or 0,
+                    'signal_strength': float(row['max_signal']) if row['max_signal'] else 0,
+                    'recommended_action': recommended_action
+                }
+        except Exception as e:
+            print(f"[WARNING] Failed to get Smart Money flows: {e}")
+            return None
+
+    def get_dex_liquidity_metrics(self, token: str) -> Dict:
+        """Get DEX liquidity and volume metrics (40% market share)"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                # Get latest DEX metrics for token
+                cursor.execute("""
+                    SELECT
+                        SUM(liquidity_usd) as total_liquidity,
+                        SUM(volume_24h) as total_volume,
+                        AVG(volume_to_liquidity_ratio) as vol_liq_ratio,
+                        COUNT(DISTINCT dex_name) as dex_count,
+                        MAX(price_usd) as max_price,
+                        MIN(price_usd) as min_price
+                    FROM dex_liquidity
+                    WHERE token = %s
+                    AND timestamp > NOW() - INTERVAL '1 hour'
+                """, (token,))
+
+                row = cursor.fetchone()
+                if not row or not row['total_liquidity']:
+                    return None
+
+                # Calculate price spread (arbitrage indicator)
+                price_spread = 0
+                arb_opportunity = 'NO'
+                if row['max_price'] and row['min_price'] and row['min_price'] > 0:
+                    price_spread = ((float(row['max_price']) - float(row['min_price'])) / float(row['min_price'])) * 100
+                    if price_spread > 1.0:
+                        arb_opportunity = 'YES'
+
+                return {
+                    'total_liquidity': float(row['total_liquidity']) if row['total_liquidity'] else 0,
+                    'total_volume': float(row['total_volume']) if row['total_volume'] else 0,
+                    'vol_liq_ratio': float(row['vol_liq_ratio']) if row['vol_liq_ratio'] else 0,
+                    'dex_count': row['dex_count'] or 0,
+                    'price_spread': price_spread,
+                    'arb_opportunity': arb_opportunity
+                }
+        except Exception as e:
+            print(f"[WARNING] Failed to get DEX metrics: {e}")
+            return None
+
+    def get_latest_funding_rate(self, token: str) -> Optional[float]:
+        """Get latest funding rate for mean reversion trading"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT funding_rate
+                    FROM funding_rates
+                    WHERE token = %s
+                    ORDER BY scraped_at DESC
+                    LIMIT 1
+                """, (token,))
+
+                result = cursor.fetchone()
+                return float(result[0]) if result else None
+        except Exception as e:
+            print(f"[WARNING] Failed to get funding rate for {token}: {e}")
+            return None
+
+    def get_market_volatility(self, hours: int = 1) -> float:
+        """Calculate average market volatility for adaptive timing"""
+        try:
+            with self.conn.cursor() as cursor:
+                # Get BTC volatility as market proxy
+                cursor.execute("""
+                    SELECT
+                        STDDEV((close - LAG(close) OVER (ORDER BY timestamp)) / LAG(close) OVER (ORDER BY timestamp))
+                    FROM crypto_ohlcv
+                    WHERE token = 'BTC'
+                    AND timestamp > NOW() - INTERVAL %s
+                    AND timeframe = '5m'
+                """, (f"{hours} hours",))
+
+                result = cursor.fetchone()
+                return float(result[0]) if result and result[0] else 0.01  # Default 1% volatility
+        except Exception as e:
+            print(f"[WARNING] Failed to get market volatility: {e}")
+            return 0.01
+
+    def get_news_sentiment(self, token: str, hours: int = 24) -> Optional[Dict]:
+        """Get recent news sentiment for a token"""
+        try:
+            with self.conn.cursor() as cursor:
+                # Search for token mentions in news
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as article_count,
+                        MAX(published_at) as latest_article
+                    FROM news_articles
+                    WHERE (title ILIKE %s OR content ILIKE %s)
+                    AND published_at > NOW() - INTERVAL %s
+                """, (f'%{token}%', f'%{token}%', f'{hours} hours'))
+
+                result = cursor.fetchone()
+                if result and result[0] > 0:
+                    return {
+                        'has_news': True,
+                        'article_count': result[0],
+                        'latest_article': result[1],
+                        'signal': 'BULLISH' if result[0] > 5 else 'NEUTRAL'  # Many articles = attention
+                    }
+                return {'has_news': False}
+        except Exception as e:
+            print(f"[WARNING] Failed to get news sentiment: {e}")
+            return None
+
+    def get_congressional_signals(self, days: int = 7) -> List[Dict]:
+        """Get recent congressional trades that might signal insider knowledge"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        ticker,
+                        transaction_type,
+                        COUNT(*) as trade_count,
+                        MAX(transaction_date) as latest_trade
+                    FROM congressional_trades
+                    WHERE transaction_date > NOW() - INTERVAL %s
+                    GROUP BY ticker, transaction_type
+                    HAVING COUNT(*) > 1  -- Multiple politicians = stronger signal
+                    ORDER BY trade_count DESC
+                    LIMIT 10
+                """, (f'{days} days',))
+
+                signals = []
+                for row in cursor.fetchall():
+                    # Map stock tickers to related crypto (e.g., COIN -> BTC, SQ -> BTC)
+                    crypto_map = {
+                        'COIN': 'BTC',  # Coinbase
+                        'MSTR': 'BTC',  # MicroStrategy
+                        'TSLA': 'BTC',  # Tesla holds BTC
+                        'SQ': 'BTC',    # Square/Block
+                        'PYPL': 'ETH',  # PayPal crypto
+                    }
+
+                    if row[0] in crypto_map:
+                        signals.append({
+                            'stock': row[0],
+                            'crypto': crypto_map[row[0]],
+                            'action': row[1],
+                            'trade_count': row[2],
+                            'signal': 'BULLISH' if 'purchase' in row[1].lower() else 'BEARISH'
+                        })
+                return signals
+        except Exception as e:
+            print(f"[WARNING] Failed to get congressional signals: {e}")
+            return []
+
+    def get_exchange_flow_signals(self, hours: int = 6) -> List[Dict]:
+        """Get recent exchange flows for front-running"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT
+                        token,
+                        flow_type,
+                        SUM(usd_value) as total_value,
+                        COUNT(*) as flow_count,
+                        MAX(timestamp) as latest_flow
+                    FROM exchange_flows
+                    WHERE timestamp > NOW() - INTERVAL %s
+                    AND usd_value > 100000  -- Only whale movements
+                    GROUP BY token, flow_type
+                    HAVING SUM(usd_value) > 500000  -- Significant total
+                    ORDER BY total_value DESC
+                """, (f"{hours} hours",))
+
+                flows = []
+                for row in cursor.fetchall():
+                    signal = 'BEARISH' if row[1] == 'INFLOW' else 'BULLISH'
+                    flows.append({
+                        'token': row[0],
+                        'flow_type': row[1],
+                        'total_value': float(row[2]),
+                        'flow_count': row[3],
+                        'latest_flow': row[4],
+                        'signal': signal,
+                        'strength': min(row[2] / 1000000, 1.0)  # Normalize to 0-1
+                    })
+                return flows
+        except Exception as e:
+            print(f"[WARNING] Failed to get exchange flow signals: {e}")
+            return []
+
+    def get_defi_tvl_signals(self, lookback_hours: int = 24) -> Optional[Dict]:
+        """Get DeFi TVL flow signals for risk assessment"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                # Get latest flow signals
+                cursor.execute("""
+                    SELECT *
+                    FROM defi_flow_signals
+                    WHERE scraped_at > NOW() - INTERVAL '%s hours'
+                    ORDER BY scraped_at DESC
+                    LIMIT 1
+                """, (lookback_hours,))
+
+                flow_signal = cursor.fetchone()
+                if not flow_signal:
+                    return None
+
+                # Get chain TVL breakdown
+                cursor.execute("""
+                    WITH latest_chains AS (
+                        SELECT DISTINCT ON (chain_name)
+                            chain_name,
+                            tvl_usd,
+                            scraped_at
+                        FROM defi_tvl_chains
+                        WHERE scraped_at > NOW() - INTERVAL '%s hours'
+                        ORDER BY chain_name, scraped_at DESC
+                    )
+                    SELECT
+                        chain_name,
+                        tvl_usd,
+                        tvl_usd / SUM(tvl_usd) OVER () * 100 as dominance_pct
+                    FROM latest_chains
+                    ORDER BY tvl_usd DESC
+                """, (lookback_hours,))
+
+                chain_data = cursor.fetchall()
+
+                # Parse JSONB fields
+                biggest_gainers = flow_signal['biggest_gainers'] if isinstance(flow_signal['biggest_gainers'], list) else json.loads(flow_signal['biggest_gainers']) if flow_signal['biggest_gainers'] else []
+                biggest_losers = flow_signal['biggest_losers'] if isinstance(flow_signal['biggest_losers'], list) else json.loads(flow_signal['biggest_losers']) if flow_signal['biggest_losers'] else []
+                category_flows = flow_signal['category_flows'] if isinstance(flow_signal['category_flows'], dict) else json.loads(flow_signal['category_flows']) if flow_signal['category_flows'] else {}
+
+                return {
+                    'risk_indicator': flow_signal['risk_indicator'],
+                    'top_gainers': biggest_gainers[:5],
+                    'top_losers': biggest_losers[:5],
+                    'chain_dominance': [
+                        {
+                            'chain': row['chain_name'],
+                            'tvl': float(row['tvl_usd']),
+                            'dominance': float(row['dominance_pct'])
+                        }
+                        for row in chain_data
+                    ],
+                    'category_flows': category_flows,
+                    'last_updated': flow_signal['scraped_at']
+                }
+        except Exception as e:
+            print(f"[WARNING] Failed to get DeFi TVL signals: {e}")
+            return None
+
+    def check_defi_risk(self) -> Dict:
+        """Check for DeFi-wide risk conditions"""
+        try:
+            signals = self.get_defi_tvl_signals(lookback_hours=6)
+            if not signals:
+                return {
+                    'should_reduce_exposure': False,
+                    'risk_level': 'UNKNOWN',
+                    'position_adjustment': 1.0,
+                    'reasons': []
+                }
+
+            reasons = []
+            risk_score = 0
+
+            # Check for massive outflows
+            if signals['risk_indicator'] == 'HIGH_OUTFLOWS':
+                reasons.append("Significant DeFi capital outflows detected")
+                risk_score += 3
+            elif signals['risk_indicator'] == 'MODERATE_OUTFLOWS':
+                reasons.append("Moderate DeFi capital outflows detected")
+                risk_score += 1
+
+            # Check for protocol collapses
+            for loser in signals.get('top_losers', [])[:3]:
+                change_pct = loser.get('change_pct', 0)
+                if change_pct and change_pct < -20:
+                    reasons.append(f"{loser['name']} lost {abs(change_pct):.1f}% TVL")
+                    risk_score += 2
+
+            # Check chain concentration risk
+            chain_dominance = signals.get('chain_dominance', [])
+            if chain_dominance and chain_dominance[0].get('dominance', 0) > 85:
+                dominance_val = chain_dominance[0].get('dominance', 0)
+                chain_name = chain_dominance[0].get('chain', 'Unknown')
+                reasons.append(f"High chain concentration risk: {chain_name} at {dominance_val:.1f}%")
+                risk_score += 1
+
+            # Determine risk level and position adjustment
+            if risk_score >= 5:
+                risk_level = 'HIGH'
+                should_reduce = True
+                position_adjustment = 0.5  # Cut position in half
+            elif risk_score >= 3:
+                risk_level = 'MODERATE'
+                should_reduce = False
+                position_adjustment = 0.8  # Reduce to 80%
+            else:
+                risk_level = 'LOW'
+                should_reduce = False
+                position_adjustment = 1.0  # Full position
+
+            return {
+                'should_reduce_exposure': should_reduce,
+                'risk_level': risk_level,
+                'position_adjustment': position_adjustment,
+                'reasons': reasons,
+                'risk_score': risk_score
+            }
+        except Exception as e:
+            print(f"[WARNING] Failed to check DeFi risk: {e}")
+            return {'should_reduce_exposure': False, 'risk_level': 'UNKNOWN', 'reasons': []}
+
+    def get_protocol_tvl(self, protocol_name: str) -> Optional[Dict]:
+        """Get TVL data for a specific DeFi protocol"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT *
+                    FROM defi_protocols
+                    WHERE LOWER(protocol_name) = LOWER(%s)
+                    ORDER BY scraped_at DESC
+                    LIMIT 1
+                """, (protocol_name,))
+
+                protocol = cursor.fetchone()
+                if not protocol:
+                    return None
+
+                return {
+                    'name': protocol['protocol_name'],
+                    'tvl': float(protocol['tvl_usd']),
+                    'change_1d': float(protocol['change_1d_pct']) if protocol['change_1d_pct'] else 0,
+                    'change_7d': float(protocol['change_7d_pct']) if protocol['change_7d_pct'] else 0,
+                    'category': protocol['category'],
+                    'main_chain': protocol['main_chain'],
+                    'risk_level': 'HIGH' if protocol['change_1d_pct'] and protocol['change_1d_pct'] < -10 else 'NORMAL'
+                }
+        except Exception as e:
+            print(f"[WARNING] Failed to get protocol TVL: {e}")
+            return None
+
+    def get_options_volatility(self) -> Optional[Dict]:
+        """Get latest options volatility data for risk assessment"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+                cursor.execute("""
+                    SELECT
+                        btc_iv, btc_skew, btc_iv_rank,
+                        eth_iv, eth_skew, eth_iv_rank,
+                        avg_iv, volatility_regime, directional_bias,
+                        risk_level, position_adjustment, scraped_at
+                    FROM options_volatility
+                    ORDER BY scraped_at DESC
+                    LIMIT 1
+                """)
+
+                row = cursor.fetchone()
+                if not row:
+                    return None
+
+                # Skip age check for now - data should be managed by orchestrator
+                # Options data updates every 30 minutes
+
+                return {
+                    'btc_iv': float(row['btc_iv']) if row['btc_iv'] else 50,
+                    'btc_skew': float(row['btc_skew']) if row['btc_skew'] else 0,
+                    'btc_iv_rank': float(row['btc_iv_rank']) if row['btc_iv_rank'] else 50,
+                    'eth_iv': float(row['eth_iv']) if row['eth_iv'] else 50,
+                    'eth_skew': float(row['eth_skew']) if row['eth_skew'] else 0,
+                    'eth_iv_rank': float(row['eth_iv_rank']) if row['eth_iv_rank'] else 50,
+                    'avg_iv': float(row['avg_iv']) if row['avg_iv'] else 50,
+                    'volatility_regime': row['volatility_regime'] or 'MODERATE',
+                    'directional_bias': row['directional_bias'] or 'NEUTRAL',
+                    'risk_level': row['risk_level'] or 'NORMAL',
+                    'position_adjustment': float(row['position_adjustment']) if row['position_adjustment'] else 1.0
+                }
+
+        except Exception as e:
+            return None  # Don't print to avoid spam, options data is optional
+
+    def check_options_risk(self) -> Dict:
+        """Check options-based risk for position sizing"""
+        try:
+            vol_data = self.get_options_volatility()
+
+            if not vol_data:
+                return {
+                    'risk_level': 'UNKNOWN',
+                    'position_adjustment': 1.0,
+                    'warnings': []
+                }
+
+            warnings = []
+            position_adjustment = vol_data['position_adjustment']
+
+            # Check for extreme conditions
+            if vol_data['avg_iv'] > 80:
+                warnings.append(f"Extreme IV: {vol_data['avg_iv']:.1f}%")
+
+            if vol_data['btc_skew'] < -8 or vol_data['eth_skew'] < -8:
+                warnings.append(f"Heavy put buying: BTC skew={vol_data['btc_skew']:.1f}, ETH skew={vol_data['eth_skew']:.1f}")
+
+            if vol_data['btc_iv_rank'] > 80 or vol_data['eth_iv_rank'] > 80:
+                warnings.append("IV at 30-day highs")
+
+            return {
+                'risk_level': vol_data['risk_level'],
+                'volatility_regime': vol_data['volatility_regime'],
+                'directional_bias': vol_data['directional_bias'],
+                'position_adjustment': position_adjustment,
+                'btc_iv': vol_data['btc_iv'],
+                'eth_iv': vol_data['eth_iv'],
+                'warnings': warnings
+            }
+
+        except Exception as e:
+            return {
+                'risk_level': 'UNKNOWN',
+                'position_adjustment': 1.0,
+                'warnings': []
+            }
+
+    def get_volatility_risk_score(self) -> int:
+        """Get volatility risk score (0-100) for crash detection"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("SELECT * FROM get_volatility_risk_score()")
+                result = cursor.fetchone()
+                if result:
+                    return int(result[0])  # Return the risk score
+                return 0
+        except:
+            return 0
+
+    def get_bridge_flow_signals(self, lookback_hours: int = 24) -> Optional[Dict]:
+        """Get bridge flow signals for L2 capital rotation"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                # Get latest flow signals
+                cursor.execute("""
+                    SELECT *
+                    FROM bridge_flow_signals
+                    WHERE created_at > NOW() - INTERVAL '%s hours'
+                    ORDER BY created_at DESC
+                """, (lookback_hours,))
+
+                signals = cursor.fetchall()
+
+                # Get 7-day aggregated flows
+                cursor.execute("""
+                    SELECT
+                        chain,
+                        SUM(deposits_usd) as deposits_7d,
+                        SUM(withdrawals_usd) as withdrawals_7d,
+                        SUM(net_flow_usd) as net_flow_7d
+                    FROM bridge_flows
+                    WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+                    GROUP BY chain
+                    ORDER BY net_flow_7d DESC
+                """)
+
+                flow_data = cursor.fetchall()
+
+                if not flow_data:
+                    return None
+
+                # Find rotation leader (highest net inflows)
+                rotation_leader = None
+                if flow_data and flow_data[0]['net_flow_7d'] > 10_000_000:
+                    rotation_leader = {
+                        'chain': flow_data[0]['chain'],
+                        'net_flow': float(flow_data[0]['net_flow_7d']),
+                        'signal': 'CAPITAL_ROTATION'
+                    }
+
+                # Find outflow warnings
+                outflow_chains = []
+                for chain in flow_data:
+                    if chain['net_flow_7d'] < -10_000_000:
+                        outflow_chains.append({
+                            'chain': chain['chain'],
+                            'net_flow': float(chain['net_flow_7d'])
+                        })
+
+                # Process signals
+                critical_signals = [s for s in signals if s['alert_level'] == 'critical']
+                warning_signals = [s for s in signals if s['alert_level'] == 'warning']
+
+                return {
+                    'rotation_leader': rotation_leader,
+                    'outflow_warnings': outflow_chains,
+                    'critical_signals': critical_signals[:3],
+                    'warning_signals': warning_signals[:3],
+                    'l2_flows': [
+                        {
+                            'chain': row['chain'],
+                            'net_flow_7d': float(row['net_flow_7d']),
+                            'deposits_7d': float(row['deposits_7d']),
+                            'withdrawals_7d': float(row['withdrawals_7d'])
+                        }
+                        for row in flow_data
+                    ]
+                }
+
+        except Exception as e:
+            print(f"[WARNING] Failed to get bridge flow signals: {e}")
+            return None
+
+    def check_l2_rotation(self, token: str = None) -> Dict:
+        """Check for L2 rotation signals that might affect a token"""
+        try:
+            signals = self.get_bridge_flow_signals(lookback_hours=24)
+
+            if not signals:
+                return {
+                    'rotation_detected': False,
+                    'affected_chains': [],
+                    'recommendation': 'No significant L2 rotation detected'
+                }
+
+            affected_chains = []
+            recommendations = []
+
+            # Check rotation leader
+            if signals.get('rotation_leader'):
+                leader = signals['rotation_leader']
+                affected_chains.append(leader['chain'])
+
+                # Token-specific recommendations based on chain
+                chain_tokens = {
+                    'Arbitrum': ['ARB', 'GMX', 'MAGIC', 'RDNT'],
+                    'Optimism': ['OP', 'VELO', 'SNX'],
+                    'Base': ['AERO', 'BRETT', 'DEGEN'],
+                    'Polygon': ['MATIC', 'QUICK', 'AAVE'],
+                    'Blast': ['BLAST', 'JUICE'],
+                }
+
+                if token and leader['chain'] in chain_tokens:
+                    if token.upper() in chain_tokens[leader['chain']]:
+                        recommendations.append(f"{token} could benefit from {leader['chain']} inflows (${leader['net_flow']/1e6:.1f}M in 7d)")
+
+            # Check outflows
+            for outflow in signals.get('outflow_warnings', []):
+                affected_chains.append(outflow['chain'])
+                recommendations.append(f"Avoid {outflow['chain']} tokens - capital fleeing (${abs(outflow['net_flow'])/1e6:.1f}M outflow)")
+
+            return {
+                'rotation_detected': len(affected_chains) > 0,
+                'affected_chains': affected_chains,
+                'rotation_leader': signals.get('rotation_leader'),
+                'recommendations': recommendations,
+                'l2_flows': signals.get('l2_flows', [])[:5]  # Top 5 L2s
+            }
+
+        except Exception as e:
+            print(f"[WARNING] Failed to check L2 rotation: {e}")
+            return {
+                'rotation_detected': False,
+                'affected_chains': [],
+                'recommendation': 'Unable to check L2 rotation'
+            }
+
+    def get_bridge_flow_velocity(self, chain: str, days: int = 7) -> Optional[Dict]:
+        """Calculate flow velocity for a specific chain"""
+        try:
+            with self.conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT * FROM calculate_flow_velocity(%s, %s)
+                """, (chain, days))
+
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        'velocity': float(result[0]) if result[0] else 0,
+                        'acceleration': float(result[1]) if result[1] else 0,
+                        'trend': result[2] if result[2] else 'UNKNOWN'
+                    }
+                return None
+
+        except Exception as e:
+            print(f"[WARNING] Failed to get flow velocity: {e}")
+            return None
+
+    def get_l2_ranking(self) -> List[Dict]:
+        """Get L2 chains ranked by capital flows"""
+        try:
+            with self.conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT * FROM l2_rotation_rankings
+                    LIMIT 10
+                """)
+
+                rankings = cursor.fetchall()
+                if not rankings:
+                    return []
+
+                return [
+                    {
+                        'chain': row['chain'],
+                        'flow_24h': float(row['flow_24h']) if row['flow_24h'] else 0,
+                        'flow_7d': float(row['flow_7d']) if row['flow_7d'] else 0,
+                        'flow_30d': float(row['flow_30d']) if row['flow_30d'] else 0,
+                        'velocity_ratio': float(row['velocity_ratio']) if row['velocity_ratio'] else 0,
+                        'rank': row['flow_rank_7d'],
+                        'status': row['rotation_status']
+                    }
+                    for row in rankings
+                ]
+
+        except Exception as e:
+            print(f"[WARNING] Failed to get L2 rankings: {e}")
+            return []
 
     def close(self):
         """Close database connection"""
