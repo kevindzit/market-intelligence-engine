@@ -79,6 +79,7 @@ scrapers:
     category: crypto
     description: Meme coin sentiment (PEPE, DOGE, SHIB, BONK, WIF)
     enabled: true
+    use_proxy: true   # Use Tor/VPN for IP rotation
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "5 minutes"
 
@@ -87,6 +88,7 @@ scrapers:
     category: crypto
     description: Top 7 by market cap (BTC, ETH, SOL, BNB, XRP, ADA, TRX)
     enabled: true
+    use_proxy: true   # Use Tor/VPN for IP rotation
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "5 minutes"
 
@@ -95,6 +97,7 @@ scrapers:
     category: crypto
     description: DeFi protocols (UNI, AAVE, LDO, MKR, CRV, GMX, SNX)
     enabled: true
+    use_proxy: true   # Use Tor/VPN for IP rotation
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "5 minutes"
 
@@ -103,6 +106,7 @@ scrapers:
     category: crypto
     description: Alt L1 blockchains (AVAX, DOT, NEAR, ATOM, ICP, ALGO, FTM)
     enabled: true
+    use_proxy: true   # Use Tor/VPN for IP rotation
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "5 minutes"
 
@@ -111,6 +115,7 @@ scrapers:
     category: crypto
     description: Ethereum L2s (ARB, OP, MATIC, METIS, IMX)
     enabled: true
+    use_proxy: true   # Use Tor/VPN for IP rotation
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "5 minutes"
 
@@ -119,6 +124,7 @@ scrapers:
     category: crypto
     description: AI/ML tokens (RENDER, FET, GRT, OCEAN, AGIX, TAO)
     enabled: true
+    use_proxy: true   # Use Tor/VPN for IP rotation
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "5 minutes"
 
@@ -127,6 +133,7 @@ scrapers:
     category: crypto
     description: Monitors 38 high-signal whale accounts (alpha callers, on-chain analysts, insiders)
     enabled: true
+    use_proxy: true   # Use Tor/VPN for IP rotation
     free_tier: "Free (4-account pool, 200 searches/15min)"
     interval: "10 minutes"
 
@@ -135,6 +142,7 @@ scrapers:
     category: crypto
     description: 5-minute price candles for all 42 tokens (OHLCV data)
     enabled: true
+    use_proxy: true  # Route through Tor/VPN (Binance blocked in US)
     free_tier: "Free (public API)"
     interval: "5 minutes"
 
@@ -143,6 +151,7 @@ scrapers:
     category: crypto
     description: Real-time order book depth for optimal entry/exit timing
     enabled: true  # Table created and tested successfully
+    use_proxy: true  # Route through Tor/VPN (Binance blocked in US)
     free_tier: "Free (public API)"
     interval: "30 seconds"
 
@@ -151,6 +160,7 @@ scrapers:
     category: crypto
     description: Perpetual futures funding rates for leverage/reversal detection
     enabled: true  # Table created and tested successfully
+    use_proxy: true  # Route through Tor/VPN (Binance blocked in US)
     free_tier: "Free (public API)"
     interval: "1 hour"
 
@@ -175,6 +185,7 @@ scrapers:
     category: crypto
     description: Real-time liquidations for flash crash/reversal detection
     enabled: true  # Table created and tested successfully
+    use_proxy: true  # Route through Tor/VPN (Binance blocked in US)
     free_tier: "Free (public API)"
     interval: "30 seconds"
 
@@ -191,6 +202,7 @@ scrapers:
     category: crypto
     description: Tracks total futures leverage (OI) for volatility prediction
     enabled: true  # Ready to test
+    use_proxy: true  # Route through Tor/VPN (Binance blocked in US)
     free_tier: "Free (public API)"
     interval: "5 minutes"
 

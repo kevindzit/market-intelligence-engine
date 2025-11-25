@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 import re
+import random
 
 # Force UTF-8 console output so Unicode dashboard symbols never crash on Windows
 for stream_name in ("stdout", "stderr"):
@@ -42,6 +43,26 @@ except ImportError:
         BRIGHT = RESET_ALL = ""
     COLORS_ENABLED = False
 
+# ============================================================================
+# MOBILE EMULATION FOR TWITTER SCRAPERS (Chad Scraper Strategy)
+# ============================================================================
+
+# Mobile User Agents for Twitter scrapers (November 2025)
+MOBILE_USER_AGENTS = [
+    # iPhone 15 Pro - iOS 18
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+    # Samsung Galaxy S24 - Android 14
+    'Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Mobile Safari/537.36',
+    # Google Pixel 8 Pro - Android 14
+    'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.111 Mobile Safari/537.36',
+]
+
+MOBILE_EMULATION_ENABLED = True
+
+def get_random_mobile_user_agent():
+    """Get a random mobile user agent"""
+    return random.choice(MOBILE_USER_AGENTS)
+
 # Global state
 running_processes = {}
 restart_attempts = {}  # Track restart attempts per scraper
@@ -55,6 +76,7 @@ scraper_modes = {}
 scraper_intervals = {}
 oneshot_status = defaultdict(dict)
 oneshot_schedule = {}
+tor_available = False
 
 # Project root (handles launches from other directories)
 PROJECT_ROOT = Path(__file__).parent.resolve()
@@ -83,6 +105,7 @@ COOKIE_STALE_MINUTES = 360
 DEFAULT_STAGGER_SECONDS = 2
 TWITTER_STAGGER_SECONDS = 5
 STREAMING_STAGGER_SECONDS = 1
+PROXY_ALL_SCRAPERS = os.getenv('PROXY_ALL_SCRAPERS', 'false').lower() == 'true'
 
 TWITTER_SOURCE_MAP = {
     'Twitter Meme Coins': 'memecoins',
@@ -1068,8 +1091,56 @@ def start_output_monitor_thread(process, scraper_name):
 # PRE-FLIGHT CHECKS
 # ============================================================================
 
+def check_and_start_tor():
+    """Check if Tor is running and start it if not."""
+    print(f"[CHECK] Tor service ... ", end="")
+
+    try:
+        # Check if Tor is running (use UTF-8 encoding for WSL output)
+        result = subprocess.run(
+            ['wsl', 'sudo', 'service', 'tor', 'status'],
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='ignore',
+            timeout=5
+        )
+
+        if result.stdout and 'is running' in result.stdout.lower():
+            print(f"{Fore.GREEN}✓ Running{Style.RESET_ALL}")
+            return True
+        else:
+            print(f"{Fore.YELLOW}○ Not running, starting...{Style.RESET_ALL}", end=" ")
+
+            # Start Tor
+            start_result = subprocess.run(
+                ['wsl', 'sudo', 'service', 'tor', 'start'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='ignore',
+                timeout=10
+            )
+
+            if start_result.returncode == 0:
+                print(f"{Fore.GREEN}✓ Started{Style.RESET_ALL}")
+                time.sleep(2)  # Give Tor a moment to initialize
+                return True
+            else:
+                print(f"{Fore.RED}✗ Failed to start{Style.RESET_ALL}")
+                return False
+
+    except subprocess.TimeoutExpired:
+        print(f"{Fore.RED}✗ Timeout{Style.RESET_ALL}")
+        return False
+    except Exception as e:
+        print(f"{Fore.RED}✗ Error: {e}{Style.RESET_ALL}")
+        return False
+
+
 def run_preflight_checks():
     """Run system checks before starting scrapers."""
+    global tor_available
     print(f"\n{'='*80}")
     print(f"{Fore.CYAN}{Style.BRIGHT}{'PRE-FLIGHT SYSTEM CHECKS':^80}{Style.RESET_ALL}")
     print(f"{'='*80}\n")
@@ -1079,6 +1150,12 @@ def run_preflight_checks():
 
     # Make sure stale cookie refresh locks don't block auto-refresh
     cleanup_cookie_locks()
+
+    # Check and start Tor if needed
+    tor_available = check_and_start_tor()
+    if not tor_available:
+        print(f"{Fore.YELLOW}[WARNING] Tor not available - IP rotation disabled{Style.RESET_ALL}")
+        print(f"         To enable: wsl sudo service tor start")
 
     # 1. Python version
     py_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
@@ -1691,6 +1768,7 @@ def get_python_executable():
 def start_scraper(scraper):
     """Start a single scraper as a background process."""
     name = scraper['name']
+    name_lower = name.lower()
     script = scraper['script']
     script_path = (PROJECT_ROOT / script).resolve()
     mode = scraper.get('mode', 'daemon').lower()
@@ -1708,6 +1786,48 @@ def start_scraper(scraper):
         env['ORCHESTRATOR_RUNNING'] = 'true'
         env.setdefault('PYTHONIOENCODING', 'utf-8')
         env.setdefault('PYTHONUTF8', '1')
+        # Always bypass the proxy for local connections (chromedriver, DB, etc.)
+        env.setdefault('NO_PROXY', '127.0.0.1,localhost')
+        env.setdefault('no_proxy', '127.0.0.1,localhost')
+
+        # Enable mobile emulation for Twitter scrapers (Chad Scraper strategy)
+        if 'twitter' in name_lower and MOBILE_EMULATION_ENABLED:
+            # Set mobile user agent
+            mobile_ua = get_random_mobile_user_agent()
+            env['MOBILE_USER_AGENT'] = mobile_ua
+            env['ENABLE_MOBILE_EMULATION'] = 'true'
+
+            # Log that we're using mobile emulation
+            print(f"{Fore.CYAN}[MOBILE] {name}: Using mobile emulation{Style.RESET_ALL}")
+
+        # Only route through Tor when required. Override rules:
+        # - use_proxy: false -> never proxy this scraper
+        # - PROXY_ALL_SCRAPERS=true -> proxy everything (except localhost)
+        # - default: proxy Binance scrapers (US-blocked) and any scraper explicitly marked use_proxy
+        proxy_flag = scraper.get('use_proxy')
+        if proxy_flag is False:
+            wants_proxy = False
+        else:
+            wants_proxy = (
+                PROXY_ALL_SCRAPERS
+                or proxy_flag is True
+                or 'binance' in name_lower
+                # Don't use Tor for Twitter when mobile emulation is enabled
+                or ('twitter' in name_lower and not MOBILE_EMULATION_ENABLED)
+            )
+        proxy_enabled = tor_available and wants_proxy
+        if proxy_enabled:
+            # WSL Tor proxy is accessible from Windows via localhost
+            env['HTTP_PROXY'] = 'socks5h://127.0.0.1:9050'
+            env['HTTPS_PROXY'] = 'socks5h://127.0.0.1:9050'
+            env['ALL_PROXY'] = 'socks5h://127.0.0.1:9050'
+        else:
+            # Remove any inherited proxy settings so non-Twitter scrapers use direct connections
+            env.pop('HTTP_PROXY', None)
+            env.pop('HTTPS_PROXY', None)
+            env.pop('ALL_PROXY', None)
+            if wants_proxy and not tor_available:
+                print(f"{Fore.YELLOW}[WARNING] {name}: Tor proxy requested but not available; using direct connection{Style.RESET_ALL}")
 
         # Start process in background with output capture
         # -u flag ensures unbuffered output for real-time monitoring
@@ -1872,12 +1992,10 @@ def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
             # Display dashboard
             display_dashboard(scrapers, db_stats, twitter_db_activity, cookie_stats, table_thresholds=db_monitor.table_thresholds if db_monitor else None)
 
-            # Check for stuck scrapers
+            # Check for stuck scrapers (displayed in DB health table only)
             if db_monitor:
                 stuck = detect_stuck_scrapers(db_monitor, stats=db_stats, warnings=freshness_warnings)
-                if stuck:
-                    for name, age in stuck:
-                        print(f"{Fore.YELLOW}[WARNING] {name} hasn't updated data in {age:.0f} minutes{Style.RESET_ALL}")
+                # Staleness info shown in database health table - no need for separate warnings
 
             # Check each process for crashes
             for name, process in list(running_processes.items()):
@@ -1937,6 +2055,22 @@ def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
                     else:
                         print(f"{Fore.RED}[ERROR] Failed to restart one-shot scraper {name}{Style.RESET_ALL}")
 
+            # Check for IP rotation restart signal
+            restart_signal_file = PROJECT_ROOT / "outputs" / ".restart_twitter_scrapers"
+            if restart_signal_file.exists():
+                print(f"{Fore.YELLOW}[IP-ROTATION] Restart signal detected - restarting Twitter scrapers{Style.RESET_ALL}")
+                try:
+                    restart_signal_file.unlink()
+                    # Restart all Twitter scrapers
+                    for name, process in list(running_processes.items()):
+                        if 'twitter' in name.lower():
+                            print(f"{Fore.YELLOW}[IP-ROTATION] Stopping {name} for IP rotation...{Style.RESET_ALL}")
+                            stop_scraper(name, process)
+                            del running_processes[name]
+                            # Will be restarted in next iteration
+                except Exception as e:
+                    print(f"{Fore.RED}[ERROR] Failed to process restart signal: {e}{Style.RESET_ALL}")
+
             # Periodic summary
             if datetime.now() - last_summary_time >= timedelta(minutes=SUMMARY_INTERVAL_MINUTES):
                 print_summary_stats(db_monitor)
@@ -1955,8 +2089,9 @@ def monitor_scrapers(db_monitor, allowed_names=None, diag_deadline=None):
 
 def main(args=None):
     """Main orchestrator function."""
-    global orchestrator_start_time, scraper_configs
+    global orchestrator_start_time, scraper_configs, ip_monitor
     orchestrator_start_time = datetime.now()
+    ip_monitor = None
 
     if args is None:
         args = argparse.Namespace(diag=None, diag_seconds=0)
@@ -1978,6 +2113,17 @@ def main(args=None):
         if response.lower() not in ['yes', 'y']:
             print(f"{Fore.RED}[ABORT] Exiting...{Style.RESET_ALL}")
             return
+
+    # Initialize IP rotation monitor for Twitter scrapers
+    ip_monitor = None
+    try:
+        from monitors.twitter_ip_monitor import integrate_with_orchestrator
+        ip_monitor = integrate_with_orchestrator()
+        print(f"{Fore.GREEN}[OK] IP rotation monitor started{Style.RESET_ALL}")
+    except ImportError:
+        print(f"{Fore.YELLOW}[INFO] IP rotation monitor not available{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.YELLOW}[WARNING] Failed to start IP monitor: {e}{Style.RESET_ALL}")
 
     # Load configuration
     scrapers = load_config()
@@ -2040,6 +2186,12 @@ def main(args=None):
         print(f"\n{Fore.YELLOW}[SIGNAL] Shutdown signal received...{Style.RESET_ALL}")
         if db_monitor:
             db_monitor.close()
+        if ip_monitor:
+            try:
+                ip_monitor.stop()
+                print(f"{Fore.GREEN}[OK] IP monitor stopped{Style.RESET_ALL}")
+            except:
+                pass
         stop_all_scrapers()
         sys.exit(0)
 
@@ -2055,6 +2207,12 @@ def main(args=None):
     finally:
         if db_monitor:
             db_monitor.close()
+        if ip_monitor:
+            try:
+                ip_monitor.stop()
+                print(f"{Fore.GREEN}[OK] IP monitor stopped{Style.RESET_ALL}")
+            except:
+                pass
         stop_all_scrapers()
 
 

@@ -21,9 +21,32 @@
       "Bash(git rm:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(wsl bash -c \"echo ''# IP Rotation Configuration for PJX\n# Exclude US exit nodes (finance compliance)\nExcludeNodes {us}\nStrictNodes 1\n\n# Prefer these countries for exit nodes\nExitNodes {de},{nl},{ch},{se},{no},{jp},{sg},{ca},{gb},{fr},{at},{be}\n\n# SOCKS proxy (accessible from Windows)\nSocksPort 0.0.0.0:9050\n\n# Control port settings\nControlPort 9051\nCookieAuthentication 0'' | sudo tee -a /etc/tor/torrc\")",
+      "Bash(wsl sudo service:*)",
+      "Bash(C:venvspjxvenvScriptspython.exe test_tor_proxy.py)",
+      "Bash(\"/mnt/c/venvs/pjxvenv/Scripts/python.exe\" test_tor_proxy.py)",
+      "Bash(cmd /c \"C:\\venvs\\pjxvenv\\Scripts\\python.exe c:\\Users\\Kevin\\OneDrive\\pjx\\test_tor_proxy.py\":*)",
+      "Bash(C:venvspjxvenvScriptspython.exe verify_tor_setup.py)",
+      "Bash(/mnt/c/venvs/pjxvenv/Scripts/python.exe:*)",
+      "Bash(cmd /c \"C:\\venvs\\pjxvenv\\Scripts\\python.exe verify_tor_setup.py\")",
+      "Bash(cmd /c \"dir outputs\\*.txt 2>&1\")",
+      "Bash(tasklist /FI \"WINDOWTITLE eq Binance*\" /V)",
+      "Bash(timeout 15 python:*)",
+      "Bash(cmd /c \"dir logs\\*.log 2>&1\")",
+      "Bash(C:venvspjxvenvScriptspython.exe crypto_scrapers/twitter_memecoins.py)",
+      "Bash(C:/venvs/pjxvenv/Scripts/python.exe:*)",
+      "Bash(wsl bash -c \"cd /mnt/c/Users/Kevin/OneDrive/pjx && chmod +x fix_tor_wsl_access.sh && ./fix_tor_wsl_access.sh\")",
+      "Bash(wsl hostname:*)",
+      "Bash(timeout 5 python:*)",
+      "Bash(C:venvspjxvenvScriptspython.exe test_mobile_emulation.py)",
+      "Bash(timeout 10 python:*)",
+      "Bash(nul)"
     ],
     "deny": [],
     "ask": []
+  },
+  "env": {
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
   }
 }

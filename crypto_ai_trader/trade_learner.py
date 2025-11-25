@@ -1143,7 +1143,9 @@ class TradeLearner:
                 'strategy_history': list(self.strategy_history)  # Convert deque to list for pickle
             }
 
-            with open('trade_learner_state.pkl', 'wb') as f:
+            # Save state to crypto_ai_trader folder
+            state_file = os.path.join(os.path.dirname(__file__), 'trade_learner_state.pkl')
+            with open(state_file, 'wb') as f:
                 pickle.dump(state, f)
 
             print("[TradeLearner] State saved (with overfitting prevention data)")
@@ -1154,8 +1156,10 @@ class TradeLearner:
     def load_state(self):
         """Load saved state from disk (with backward compatibility)"""
         try:
-            if os.path.exists('trade_learner_state.pkl'):
-                with open('trade_learner_state.pkl', 'rb') as f:
+            # Load state from crypto_ai_trader folder
+            state_file = os.path.join(os.path.dirname(__file__), 'trade_learner_state.pkl')
+            if os.path.exists(state_file):
+                with open(state_file, 'rb') as f:
                     state = pickle.load(f)
 
                 # Core state (always present)

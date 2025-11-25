@@ -15,6 +15,7 @@ import os
 import json
 import time
 import sys
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 from twikit import Client
@@ -116,41 +117,50 @@ class TwitterAccountPool:
             print(f"[Cookie Lock] Warning: Could not remove lock file: {e}")
 
     def _load_accounts(self):
-        """Load all cookies_accountN.json files and create clients"""
+        """Load all cookies_accountN.json files (and main cookies.json) and create clients."""
         project_root = Path(__file__).parent.parent
         cookies_dir = project_root / "cookies"
-        account_num = 1
         loaded_count = 0
 
-        # Keep trying to load account files until we don't find one
-        while True:
-            cookies_file = cookies_dir / f"cookies_account{account_num}.json"
+        cookies_files = []
 
-            if not cookies_file.exists():
-                # No more account files found
-                break
+        # Gather all numbered account cookies (handles gaps, e.g., missing account3)
+        for path in cookies_dir.glob("cookies_account*.json"):
+            if "backup" in path.name.lower():
+                continue
+            match = re.search(r"account(\d+)", path.stem)
+            if not match:
+                continue
+            cookies_files.append((int(match.group(1)), path, f"Account {match.group(1)}"))
 
+        # Optionally include the main cookies.json as the next account in rotation
+        main_cookies = cookies_dir / "cookies.json"
+        if main_cookies.exists() and "backup" not in main_cookies.name.lower():
+            next_num = (max([num for num, _, _ in cookies_files], default=0) + 1) or 1
+            cookies_files.append((next_num, main_cookies, "Main Account"))
+
+        # Sort by account number for deterministic rotation
+        cookies_files.sort(key=lambda item: item[0])
+
+        for account_num, cookies_file, label in cookies_files:
             try:
-                # Create client for this account
                 client = Client('en-US')
                 client.load_cookies(str(cookies_file))
 
-                # Add to pool with initial timestamp (far in past so it's available immediately)
                 self.clients.append({
                     'client': client,
                     'account_num': account_num,
+                    'label': label,
                     'last_used': datetime.now() - timedelta(hours=1),  # Available immediately
                     'cookies_file': str(cookies_file),
                     'rate_limited_until': datetime.now() - timedelta(hours=1)
                 })
 
                 loaded_count += 1
-                print(f"[Account Pool] [OK] Loaded Account {account_num}")
+                print(f"[Account Pool] [OK] Loaded Account {account_num} ({label})")
 
             except Exception as e:
-                print(f"[Account Pool] [FAIL] Failed to load Account {account_num}: {e}")
-
-            account_num += 1
+                print(f"[Account Pool] [FAIL] Failed to load {label} ({account_num}): {e}")
 
         if loaded_count == 0:
             print("[Account Pool] [WARN] No account cookie files found!")

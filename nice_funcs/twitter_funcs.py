@@ -15,6 +15,28 @@ from random import randint
 from datetime import datetime
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from pathlib import Path
+from urllib.parse import urlparse
+
+# Optional socks5 proxy wiring for Tor
+def _maybe_enable_socks_proxy():
+    proxy_url = os.getenv("ALL_PROXY", "") or os.getenv("all_proxy", "")
+    if not proxy_url.lower().startswith("socks5"):
+        return
+    try:
+        import socks  # PySocks
+        import socket
+        parsed = urlparse(proxy_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 9050
+        socks.setdefaultproxy(socks.SOCKS5, host, port, rdns=True)
+        socket.socket = socks.socksocket  # type: ignore
+        # Ensure create_connection also uses socks
+        socks.wrapmodule(socket)
+        print(f"[OK] SOCKS proxy enabled for Twitter: {host}:{port}")
+    except Exception as e:
+        print(f"[WARN] Could not enable SOCKS proxy for Twitter: {e}")
+
+_maybe_enable_socks_proxy()
 
 
 def _force_utf8_io():
@@ -33,6 +55,11 @@ _force_utf8_io()
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from monitors.refresh_cookies import refresh_cookies, save_cookies
+try:
+    from monitors.refresh_cookies_with_rotation import auto_refresh_cookies_with_rotation
+    IP_ROTATION_AVAILABLE = True
+except ImportError:
+    IP_ROTATION_AVAILABLE = False
 
 # ============================================================================
 # CONSTANTS
@@ -576,6 +603,23 @@ def auto_refresh_cookies(client, cookies_path="cookies/cookies.json"):
 
             if not cookies:
                 print(f"[AUTO-REFRESH] ✗ Failed to extract cookies after {max_attempts} attempts")
+
+                # Try with IP rotation if available and we suspect IP block
+                if IP_ROTATION_AVAILABLE:
+                    print(f"[AUTO-REFRESH] Attempting refresh with IP rotation...")
+                    try:
+                        rotated_client = auto_refresh_cookies_with_rotation(
+                            client=client,
+                            cookies_path=str(cookies_path),
+                            backend="tor",
+                            force_rotation=True
+                        )
+                        if rotated_client:
+                            print(f"[AUTO-REFRESH] ✓ Success with IP rotation!")
+                            return rotated_client
+                    except Exception as e:
+                        print(f"[AUTO-REFRESH] IP rotation attempt failed: {e}")
+
                 return None
 
             if not save_cookies(cookies):

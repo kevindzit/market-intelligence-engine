@@ -44,7 +44,8 @@ vaderSentiment>=3.3.2
 
 # Utilities
 python-dotenv>=1.0.0
-httpx>=0.28.0
+httpx[socks]>=0.28.0
+PySocks>=1.7.1
 setuptools>=75.0.0
 colorama>=0.4.6  # Color terminal output (Windows compatible)
 pyyaml>=6.0.2  # YAML config parsing
