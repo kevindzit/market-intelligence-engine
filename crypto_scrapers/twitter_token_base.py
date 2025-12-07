@@ -8,7 +8,7 @@ import os
 import sys
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from random import randint
 from dotenv import load_dotenv
@@ -169,8 +169,8 @@ class TwitterTokenScraperBase:
 
             print(f"[Auth Recovery] Attempting to refresh cookies for Account {account_num}...")
 
-            # Try to refresh the account's cookies
-            success = account_pool.refresh_account(account_num, max_attempts=3)
+            # Try to refresh the account's cookies (limit to 2 attempts since outer logic handles rotation)
+            success = account_pool.refresh_account(account_num, max_attempts=2)
             if success:
                 # Update our client reference to the refreshed one
                 for acc in account_pool.clients:
@@ -189,6 +189,7 @@ class TwitterTokenScraperBase:
     async def get_tweets_for_token(self, token):
         """Fetch tweets for a token with enhanced data and account rotation"""
         attempt = 0
+        refreshed_accounts = set()  # Track which accounts we've already refreshed to avoid redundant refreshes
 
         while attempt < MAX_RATE_LIMIT_ACCOUNT_SWITCHES:
             collected = []
@@ -231,8 +232,8 @@ class TwitterTokenScraperBase:
                             'likes': getattr(tweet, 'favorite_count', 0) or 0,
                             'replies': getattr(tweet, 'reply_count', 0) or 0,
                             'quotes': getattr(tweet, 'quote_count', 0) or 0,
-                            'created_at': getattr(tweet, 'created_at', datetime.utcnow()),
-                            'timestamp': datetime.utcnow(),
+                            'created_at': getattr(tweet, 'created_at', datetime.now(timezone.utc)),
+                            'timestamp': datetime.now(timezone.utc),
                             'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
                             'hashtag_count': tweet.text.count('#')
                         }
@@ -260,47 +261,82 @@ class TwitterTokenScraperBase:
                 error_msg = str(e).lower()
                 error_str = str(e)
 
+                # Get current account number to track refresh attempts
+                try:
+                    from nice_funcs.twitter_account_pool import account_pool
+                    current_account = account_pool.get_account_num(self.client)
+                except:
+                    current_account = None
+
                 # Check for Cloudflare blocking (specific error pattern)
                 if "'clienttransaction' object has no attribute 'key'" in error_msg:
                     print(f"[WARN] Cloudflare challenge detected - triggering cookie refresh")
 
-                    # Try to refresh cookies for this account
-                    if self._handle_auth_error():
-                        print(f"[OK] Cookies refreshed after Cloudflare challenge, retrying {token}...")
+                    # Only refresh if we haven't already refreshed this account
+                    if current_account and current_account not in refreshed_accounts:
+                        if self._handle_auth_error():
+                            refreshed_accounts.add(current_account)
+                            print(f"[OK] Cookies refreshed after Cloudflare challenge, retrying {token}...")
+                            await asyncio.sleep(randint(2, 4))
+                            attempt += 1
+                            continue
+
+                    # Either already refreshed or refresh failed - try rotating to another account
+                    if self._swap_account_after_rate_limit():
+                        print(f"[OK] Rotated to another account after Cloudflare, retrying {token}...")
                         await asyncio.sleep(randint(2, 4))
                         attempt += 1
                         continue
                     else:
-                        # Couldn't refresh, try rotating to another account
-                        if self._swap_account_after_rate_limit():
-                            print(f"[OK] Rotated to another account after Cloudflare, retrying {token}...")
-                            await asyncio.sleep(randint(2, 4))
-                            attempt += 1
-                            continue
-                        else:
-                            print(f"[ERROR] Unable to bypass Cloudflare, skipping {token}")
-                            break
+                        print(f"[ERROR] Unable to bypass Cloudflare, skipping {token}")
+                        break
 
                 # Check for regular auth errors
                 elif '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                     print(f"[WARN] Authentication error detected: {e}")
 
-                    # Try to refresh cookies for this account
-                    if self._handle_auth_error():
-                        print(f"[OK] Cookies refreshed, retrying {token}...")
+                    # Only refresh if we haven't already refreshed this account
+                    if current_account and current_account not in refreshed_accounts:
+                        if self._handle_auth_error():
+                            refreshed_accounts.add(current_account)
+                            print(f"[OK] Cookies refreshed, retrying {token}...")
+                            await asyncio.sleep(randint(2, 4))
+                            attempt += 1
+                            continue
+
+                    # Either already refreshed or refresh failed - try rotating to another account
+                    if self._swap_account_after_rate_limit():
+                        print(f"[OK] Rotated to another account, retrying {token}...")
                         await asyncio.sleep(randint(2, 4))
                         attempt += 1
                         continue
                     else:
-                        # Couldn't refresh, try rotating to another account
-                        if self._swap_account_after_rate_limit():
-                            print(f"[OK] Rotated to another account, retrying {token}...")
-                            await asyncio.sleep(randint(2, 4))
-                            attempt += 1
-                            continue
-                        else:
-                            print(f"[ERROR] Unable to recover from auth error, skipping {token}")
-                            break
+                        print(f"[ERROR] Unable to recover from auth error, skipping {token}")
+                        break
+
+                # Check for locked account errors - rotate immediately
+                elif 'locked' in error_msg or 'suspended' in error_msg:
+                    print(f"[WARN] Account locked/suspended detected - rotating to another account")
+                    if self._swap_account_after_rate_limit():
+                        print(f"[OK] Switched to different account, retrying {token}...")
+                        await asyncio.sleep(randint(2, 4))
+                        attempt += 1
+                        continue
+                    else:
+                        print(f"[ERROR] No other accounts available, skipping {token}")
+                        break
+
+                # Check for recursion depth errors - rotate to fresh account
+                elif 'recursion' in error_msg or 'maximum recursion depth' in error_msg:
+                    print(f"[WARN] Recursion error detected - rotating to fresh account")
+                    if self._swap_account_after_rate_limit():
+                        print(f"[OK] Switched to fresh account, retrying {token}...")
+                        await asyncio.sleep(randint(3, 6))
+                        attempt += 1
+                        continue
+                    else:
+                        print(f"[ERROR] No other accounts available, skipping {token}")
+                        break
 
                 print(f"[ERROR] Failed to fetch {token}: {e}")
                 break
@@ -482,37 +518,15 @@ class TwitterTokenScraperBase:
 
         all_tweets = []
 
-        # Collect tweets - retry up to 10 times with fresh cookies if auth fails
-        max_refresh_attempts = 10
-        for refresh_attempt in range(max_refresh_attempts):
+        # Collect tweets - get_tweets_for_token() handles auth errors internally
+        # No outer retry loop needed since each token fetch has its own error handling
+        for token in self.tokens:
             try:
-                for token in self.tokens:
-                    tweets = await self.get_tweets_for_token(token)
-                    all_tweets.extend(tweets)
-                break  # Success - exit retry loop
-
+                tweets = await self.get_tweets_for_token(token)
+                all_tweets.extend(tweets)
             except Exception as e:
-                error_msg = str(e).lower()
-                if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
-                    print(f"\n[AUTH ERROR] Authentication failed (refresh cycle {refresh_attempt + 1}/{max_refresh_attempts})")
-                    print(f"[REFRESH] Getting fresh cookies and creating new client...")
-
-                    new_client = auto_refresh_cookies(self.client)
-                    if new_client:
-                        self.client = new_client
-                        all_tweets = []  # Clear partial results
-                        print(f"[RETRY] Retrying all tokens with fresh client...")
-                        continue
-                    else:
-                        backoff = min(30, 5 * (refresh_attempt + 1))
-                        print(f"[WARN] Cookie refresh attempt {refresh_attempt + 1} failed. Waiting {backoff}s before retry.")
-                        await asyncio.sleep(backoff)
-                        continue
-                else:
-                    print(f"[ERROR] Unexpected error: {e}")
-                    break
-        else:
-            print(f"[FATAL] Still failing after {max_refresh_attempts} refresh attempts. Skipping this cycle.")
+                print(f"[ERROR] Unexpected error fetching {token}: {e}")
+                # Continue to next token instead of retrying the whole cycle
 
         # Save tweets and track health
         saved = 0

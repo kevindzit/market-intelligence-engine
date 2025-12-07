@@ -1,52 +1,18 @@
 {
+  "env": {
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
+  },
   "permissions": {
     "allow": [
+      "Bash(dir /b \"c:\\Users\\Kevin\\OneDrive\\Rupert\")",
+      "Bash(dir /b /a \"c:\\Users\\Kevin\\OneDrive\\Rupert\")",
+      "Bash(move:*)",
+      "Bash(cmd /c \"move \"\"c:\\Users\\Kevin\\OneDrive\\Rupert\\AI_TRADING_SYSTEM_BUILD_GUIDE_v2.md\"\" \"\"c:\\Users\\Kevin\\OneDrive\\Rupert\\docs\\build_guide.md\"\"\")",
+      "Bash(cmd /c:*)",
       "Bash(python:*)",
-      "Bash(psql:*)",
-      "Bash(timeout 30 python:*)",
-      "Bash(copy:*)",
-      "Bash(curl:*)",
-      "Bash(docker exec:*)",
-      "Bash(docker ps:*)",
-      "Bash(C:venvspjxvenvScriptspip.exe install pyautogui)",
-      "Bash(C:venvspjxvenvScriptspip.exe install seleniumbase)",
-      "Bash(del:*)",
-      "Bash(rm:*)",
-      "Bash(mv:*)",
-      "Bash(dir:*)",
-      "Bash(cmd /c \"dir monitors\\*cookie*.py monitors\\refresh*.py 2>&1\")",
-      "Bash(taskkill:*)",
-      "Bash(cmd /c \"dir house_data\\processed_docs.txt 2>&1\")",
-      "Bash(cmd /c \"taskkill /IM python.exe /T\")",
-      "Bash(git rm:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(git push:*)",
-      "Bash(wsl bash -c \"echo ''# IP Rotation Configuration for PJX\n# Exclude US exit nodes (finance compliance)\nExcludeNodes {us}\nStrictNodes 1\n\n# Prefer these countries for exit nodes\nExitNodes {de},{nl},{ch},{se},{no},{jp},{sg},{ca},{gb},{fr},{at},{be}\n\n# SOCKS proxy (accessible from Windows)\nSocksPort 0.0.0.0:9050\n\n# Control port settings\nControlPort 9051\nCookieAuthentication 0'' | sudo tee -a /etc/tor/torrc\")",
-      "Bash(wsl sudo service:*)",
-      "Bash(C:venvspjxvenvScriptspython.exe test_tor_proxy.py)",
-      "Bash(\"/mnt/c/venvs/pjxvenv/Scripts/python.exe\" test_tor_proxy.py)",
-      "Bash(cmd /c \"C:\\venvs\\pjxvenv\\Scripts\\python.exe c:\\Users\\Kevin\\OneDrive\\pjx\\test_tor_proxy.py\":*)",
-      "Bash(C:venvspjxvenvScriptspython.exe verify_tor_setup.py)",
-      "Bash(/mnt/c/venvs/pjxvenv/Scripts/python.exe:*)",
-      "Bash(cmd /c \"C:\\venvs\\pjxvenv\\Scripts\\python.exe verify_tor_setup.py\")",
-      "Bash(cmd /c \"dir outputs\\*.txt 2>&1\")",
-      "Bash(tasklist /FI \"WINDOWTITLE eq Binance*\" /V)",
-      "Bash(timeout 15 python:*)",
-      "Bash(cmd /c \"dir logs\\*.log 2>&1\")",
-      "Bash(C:venvspjxvenvScriptspython.exe crypto_scrapers/twitter_memecoins.py)",
-      "Bash(C:/venvs/pjxvenv/Scripts/python.exe:*)",
-      "Bash(wsl bash -c \"cd /mnt/c/Users/Kevin/OneDrive/pjx && chmod +x fix_tor_wsl_access.sh && ./fix_tor_wsl_access.sh\")",
-      "Bash(wsl hostname:*)",
-      "Bash(timeout 5 python:*)",
-      "Bash(C:venvspjxvenvScriptspython.exe test_mobile_emulation.py)",
-      "Bash(timeout 10 python:*)",
-      "Bash(nul)"
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []
-  },
-  "env": {
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-5-20251101"
   }
 }

@@ -190,28 +190,60 @@ CRYPTO_LEXICON = {
 # HTTPX CLIENT SETUP
 # ============================================================================
 
+# Guard variables to prevent double-patching and re-entrancy (causes infinite recursion)
+_httpx_patched = False
+_httpx_creating = False  # Re-entrancy guard for client creation
+
 def setup_httpx_patching():
     """Patch httpx.Client to use rotating user agents and proper headers
 
     Must be called BEFORE importing twikit.Client
     Returns: None (modifies httpx.Client globally)
+
+    IMPORTANT: This function includes multiple guards to prevent recursion:
+    1. _httpx_patched - prevents the patch from being applied twice
+    2. _httpx_creating - prevents re-entrancy during client instantiation
     """
+    global _httpx_patched
+
+    # Prevent double-patching - this is critical to avoid recursion
+    if _httpx_patched:
+        return
+
+    # Check if httpx.Client is already a wrapper function (not a class)
+    # This catches cases where something else already patched it
+    if not isinstance(httpx.Client, type):
+        print("[WARN] httpx.Client already patched by another module, skipping")
+        _httpx_patched = True
+        return
+
+    _httpx_patched = True
     original_client = httpx.Client
 
     def patched_client(*args, **kwargs):
-        if 'headers' not in kwargs:
-            kwargs['headers'] = {}
+        global _httpx_creating
 
-        kwargs['headers'].update({
-            'User-Agent': USER_AGENTS[randint(0, len(USER_AGENTS)-1)],
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-        })
+        # Re-entrancy guard - if we're already creating a client, use original directly
+        if _httpx_creating:
+            return original_client(*args, **kwargs)
 
-        kwargs.pop('proxy', None)
-        return original_client(*args, **kwargs)
+        _httpx_creating = True
+        try:
+            if 'headers' not in kwargs:
+                kwargs['headers'] = {}
+
+            kwargs['headers'].update({
+                'User-Agent': USER_AGENTS[randint(0, len(USER_AGENTS)-1)],
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+            })
+
+            kwargs.pop('proxy', None)
+            return original_client(*args, **kwargs)
+        finally:
+            _httpx_creating = False
 
     httpx.Client = patched_client
     print("[OK] httpx client patched with user agent rotation")

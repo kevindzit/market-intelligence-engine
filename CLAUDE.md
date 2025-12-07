@@ -24,12 +24,6 @@ We have built **production-ready Twitter sentiment scrapers** using research-bac
 - **Keep iterations small** - A few files at a time, not 10+ files
 - **Simple and clean** over clever and complex
 
-### Use APIs, Not Local Models
-- **Claude Sonnet 4** for trading decisions (~$10-15/month)
-- **Gemini Flash** for data processing (~$1-2/month)
-- **DeepSeek** for strategic analysis (~$5-10/month)
-- **NO local LLMs** - APIs are cheaper than $5k GPU server
-
 ---
 
 ## Development Rules

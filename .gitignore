@@ -70,3 +70,15 @@ backups/
 google-chrome-stable_current_amd64.deb
 .browser_sessions/
 downloaded_files/
+
+# Temp notes
+notes.txt
+scraptenotesfor me.txt
+nul
+
+# Database backups
+*.sql
+pjx_postgres_backup.sql
+
+# Lock files
+*.lock

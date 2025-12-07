@@ -8,7 +8,7 @@ import os
 import sys
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from random import randint
 from dotenv import load_dotenv
@@ -256,8 +256,8 @@ class WhaleTracker:
                             'likes': getattr(tweet, 'favorite_count', 0) or 0,
                             'replies': getattr(tweet, 'reply_count', 0) or 0,
                             'quotes': getattr(tweet, 'quote_count', 0) or 0,
-                            'created_at': getattr(tweet, 'created_at', datetime.utcnow()),
-                            'timestamp': datetime.utcnow(),
+                            'created_at': getattr(tweet, 'created_at', datetime.now(timezone.utc)),
+                            'timestamp': datetime.now(timezone.utc),
                             'mentioned_tokens': self.extract_mentioned_tokens(tweet.text),
                             'account_type': WHALE_ACCOUNTS.get(username, 'Unknown'),
                             'has_urls': bool('http://' in tweet.text or 'https://' in tweet.text),
@@ -292,7 +292,35 @@ class WhaleTracker:
                 error_msg = str(e).lower()
                 if '404' in error_msg or 'unauthorized' in error_msg or 'forbidden' in error_msg:
                     print(f"    [WARN] Authentication error for @{username}: {e}")
+                    if self._swap_account_after_rate_limit():
+                        print(f"    [OK] Rotated account, retrying @{username}...")
+                        await asyncio.sleep(randint(2, 4))
+                        attempts += 1
+                        continue
                     raise
+
+                # Check for locked account errors - rotate immediately
+                if 'locked' in error_msg or 'suspended' in error_msg:
+                    print(f"    [WARN] Account locked/suspended - rotating")
+                    if self._swap_account_after_rate_limit():
+                        print(f"    [OK] Switched account, retrying @{username}...")
+                        await asyncio.sleep(randint(2, 4))
+                        attempts += 1
+                        continue
+                    print(f"    [ERROR] No other accounts available")
+                    break
+
+                # Check for recursion depth errors - rotate to fresh account
+                if 'recursion' in error_msg or 'maximum recursion depth' in error_msg:
+                    print(f"    [WARN] Recursion error - rotating to fresh account")
+                    if self._swap_account_after_rate_limit():
+                        print(f"    [OK] Switched to fresh account, retrying @{username}...")
+                        await asyncio.sleep(randint(3, 6))
+                        attempts += 1
+                        continue
+                    print(f"    [ERROR] No other accounts available")
+                    break
+
                 print(f"    [ERROR] Failed to fetch @{username}: {e}")
                 break
 

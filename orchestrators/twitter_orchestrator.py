@@ -9,7 +9,8 @@ import time
 import random
 import yaml
 import psycopg2
-from datetime import datetime, timedelta
+from psycopg2 import pool
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections import defaultdict, deque
 
@@ -22,6 +23,50 @@ from orchestrators.base_orchestrator import (
     monitor_and_restart_scrapers, run_preflight_checks, check_database_connection,
     TWITTER_STAGGER_SECONDS, scraper_logs
 )
+
+# Database connection pool (initialized lazily)
+_db_pool = None
+
+def get_db_pool():
+    """Get or create the database connection pool."""
+    global _db_pool
+    if _db_pool is None:
+        try:
+            _db_pool = pool.SimpleConnectionPool(
+                1, 5,  # min 1, max 5 connections
+                host=os.getenv('DB_HOST', 'localhost'),
+                port=int(os.getenv('DB_PORT', 54594)),
+                dbname=os.getenv('DB_NAME', 'pjx'),
+                user=os.getenv('DB_USER', 'postgres'),
+                password=os.getenv('DB_PASSWORD', 'postgres')
+            )
+        except Exception as e:
+            print(f"{Fore.RED}[DB POOL] Failed to create pool: {e}{Style.RESET_ALL}")
+            return None
+    return _db_pool
+
+def get_db_connection():
+    """Get a connection from the pool."""
+    pool = get_db_pool()
+    if pool:
+        try:
+            return pool.getconn()
+        except:
+            return None
+    return None
+
+def return_db_connection(conn):
+    """Return a connection to the pool."""
+    pool = get_db_pool()
+    if pool and conn:
+        try:
+            pool.putconn(conn)
+        except:
+            pass
+
+def utc_now():
+    """Get current UTC time as naive datetime (for comparing with PostgreSQL timestamps)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 # Mobile User Agents for Twitter scrapers (November 2025)
 MOBILE_USER_AGENTS = [
@@ -48,14 +93,11 @@ def get_random_mobile_user_agent():
 
 def get_tweet_counts_by_time():
     """Get real tweet counts from database for different time periods."""
+    conn = None
     try:
-        conn = psycopg2.connect(
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=int(os.getenv('DB_PORT', 54594)),
-            dbname=os.getenv('DB_NAME', 'pjx'),
-            user=os.getenv('DB_USER', 'postgres'),
-            password=os.getenv('DB_PASSWORD', 'postgres')
-        )
+        conn = get_db_connection()
+        if not conn:
+            return None
 
         time_periods = {
             '15min': 15,
@@ -79,21 +121,19 @@ def get_tweet_counts_by_time():
                 """, (minutes,))
                 counts[period_name] = cur.fetchone()[0]
 
-        conn.close()
         return counts
     except Exception as e:
         return None
+    finally:
+        return_db_connection(conn)
 
 def get_tweets_by_scraper(minutes=15):
     """Get real tweet counts per scraper from database."""
+    conn = None
     try:
-        conn = psycopg2.connect(
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=int(os.getenv('DB_PORT', 54594)),
-            dbname=os.getenv('DB_NAME', 'pjx'),
-            user=os.getenv('DB_USER', 'postgres'),
-            password=os.getenv('DB_PASSWORD', 'postgres')
-        )
+        conn = get_db_connection()
+        if not conn:
+            return {}
 
         scraper_counts = {}
         with conn.cursor() as cur:
@@ -118,10 +158,11 @@ def get_tweets_by_scraper(minutes=15):
                 result = cur.fetchone()
                 scraper_counts[scraper_name] = result[0] if result else 0
 
-        conn.close()
         return scraper_counts
     except Exception:
         return {}
+    finally:
+        return_db_connection(conn)
 
 def get_last_tweet_times():
     """Get minutes since last tweet per scraper (based on scraped_at)."""
@@ -167,14 +208,11 @@ def get_last_tweet_times():
 
 def get_recent_alerts():
     """Get recent high-alert tweets from database."""
+    conn = None
     try:
-        conn = psycopg2.connect(
-            host=os.getenv('DB_HOST', 'localhost'),
-            port=int(os.getenv('DB_PORT', 54594)),
-            dbname=os.getenv('DB_NAME', 'pjx'),
-            user=os.getenv('DB_USER', 'postgres'),
-            password=os.getenv('DB_PASSWORD', 'postgres')
-        )
+        conn = get_db_connection()
+        if not conn:
+            return []
 
         alerts = []
         with conn.cursor() as cur:
@@ -188,10 +226,103 @@ def get_recent_alerts():
             """)
             alerts = cur.fetchall()
 
-        conn.close()
         return alerts
     except Exception:
         return []
+    finally:
+        return_db_connection(conn)
+
+def get_recent_tweets(limit=10):
+    """Get the most recent tweets from database for history display."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        tweets = []
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT token, author_username, sentiment_label, sentiment_score,
+                       LEFT(tweet_text, 60) as tweet_preview, scraped_at, source
+                FROM twitter_sentiment
+                ORDER BY scraped_at DESC
+                LIMIT %s
+            """, (limit,))
+            tweets = cur.fetchall()
+
+        return tweets
+    except Exception:
+        return []
+    finally:
+        return_db_connection(conn)
+
+def get_velocity_metrics():
+    """Get recent velocity metrics (sentiment momentum) from database."""
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return []
+
+        metrics = []
+        with conn.cursor() as cur:
+            # Get tokens with significant sentiment changes in last 15 min
+            cur.execute("""
+                WITH recent AS (
+                    SELECT token,
+                           AVG(sentiment_score) as avg_sentiment,
+                           COUNT(*) as tweet_count,
+                           AVG(CASE WHEN bot_probability IS NOT NULL THEN bot_probability ELSE 0 END) as avg_bot_prob
+                    FROM twitter_sentiment
+                    WHERE scraped_at >= NOW() - INTERVAL '15 minutes'
+                    GROUP BY token
+                    HAVING COUNT(*) >= 3
+                ),
+                older AS (
+                    SELECT token,
+                           AVG(sentiment_score) as avg_sentiment
+                    FROM twitter_sentiment
+                    WHERE scraped_at >= NOW() - INTERVAL '60 minutes'
+                    AND scraped_at < NOW() - INTERVAL '15 minutes'
+                    GROUP BY token
+                )
+                SELECT r.token,
+                       r.avg_sentiment as recent_sentiment,
+                       o.avg_sentiment as older_sentiment,
+                       r.avg_sentiment - COALESCE(o.avg_sentiment, 0) as sentiment_change,
+                       r.tweet_count,
+                       r.avg_bot_prob
+                FROM recent r
+                LEFT JOIN older o ON r.token = o.token
+                WHERE ABS(r.avg_sentiment - COALESCE(o.avg_sentiment, 0)) > 0.1
+                ORDER BY ABS(r.avg_sentiment - COALESCE(o.avg_sentiment, 0)) DESC
+                LIMIT 5
+            """)
+            metrics = cur.fetchall()
+
+        return metrics
+    except Exception:
+        return []
+    finally:
+        return_db_connection(conn)
+
+# Global error tracking with timestamps and status
+tracked_errors = deque(maxlen=20)
+
+def track_error(scraper_name, error_msg, is_handled=False, is_resolved=False):
+    """Track an error with timestamp and status."""
+    tracked_errors.append({
+        'timestamp': utc_now(),  # Use UTC for consistency
+        'scraper': scraper_name,
+        'message': error_msg[:80],  # Truncate long messages
+        'handled': is_handled,
+        'resolved': is_resolved
+    })
+
+def get_tracked_errors(limit=5):
+    """Get recent tracked errors for display."""
+    return list(tracked_errors)[-limit:]
 
 def check_cookie_status():
     """Check Twitter cookie file status."""
@@ -355,7 +486,6 @@ def display_dashboard():
 
     # Get per-scraper activity (last 15 minutes)
     scraper_counts = get_tweets_by_scraper(15)
-    last_tweet_times = get_last_tweet_times()
 
     print(f"\n{Fore.WHITE}[ACTIVITY] SCRAPER STATUS (Last 15 min):{Style.RESET_ALL}")
     print("-"*90)
@@ -378,20 +508,7 @@ def display_dashboard():
         has_error = any('error' in log.lower() or 'failed' in log.lower() for log in recent_logs)
         error_indicator = f" {Fore.RED}[ERROR]{Style.RESET_ALL}" if has_error else ""
 
-        # Last tweet age
-        minutes_ago = last_tweet_times.get(name)
-        if minutes_ago is None:
-            last_str = "Last: --"
-        elif minutes_ago < 1:
-            last_str = "Last: <1m ago"
-        elif minutes_ago < 60:
-            last_str = f"Last: {int(minutes_ago)}m ago"
-        else:
-            hours = int(minutes_ago // 60)
-            mins = int(minutes_ago % 60)
-            last_str = f"Last: {hours}h {mins}m ago"
-
-        print(f"  {status_color}{status_icon}{Style.RESET_ALL} {name:<25} | Tweets: {count_color}{tweet_count:>4}{Style.RESET_ALL} | {last_str:<16} | Up: {uptime}{error_indicator}")
+        print(f"  {status_color}{status_icon}{Style.RESET_ALL} {name:<25} | Tweets: {count_color}{tweet_count:>4}{Style.RESET_ALL} | Up: {uptime}{error_indicator}")
 
     # Show all cookie accounts status
     cookie_accounts = check_all_cookie_accounts()
@@ -430,48 +547,152 @@ def display_dashboard():
     cookie_ok, cookie_msg = check_cookie_status()
     if not cookie_ok:
         print(f"\n{Fore.RED}[CRITICAL] COOKIE STATUS: {cookie_msg}{Style.RESET_ALL}")
+        track_error("Cookie System", cookie_msg, is_handled=False)
 
-    # Show any recent errors from scraper logs
-    error_messages = []
+    # Scan scraper logs for errors and track them
     for name, logs in scraper_logs.items():
         for log in list(logs)[-5:]:  # Check last 5 logs per scraper
-            if any(word in log.lower() for word in ['error', 'failed', 'exception', 'blocked']):
-                error_messages.append((name, log))
-
-    if error_messages:
-        print(f"\n{Fore.WHITE}[ERRORS] RECENT ISSUES:{Style.RESET_ALL}")
-        print("-"*90)
-        for scraper, error in error_messages[-3:]:  # Show last 3 errors
-            # Truncate long errors
-            error_short = error[:60] + "..." if len(error) > 60 else error
-            print(f"  [{scraper[:15]}] {Fore.RED}{error_short}{Style.RESET_ALL}")
+            log_lower = log.lower()
+            if any(word in log_lower for word in ['error', 'failed', 'exception', 'blocked']):
+                # Determine if it was handled (contains retry/recovering keywords)
+                is_handled = any(word in log_lower for word in ['retry', 'retrying', 'recovered', 'refreshing'])
+                # Only track if not already in recent tracked errors (avoid duplicates)
+                recent_messages = [e.get('message', '') for e in list(tracked_errors)[-10:]]
+                if log[:80] not in recent_messages:
+                    track_error(name, log, is_handled=is_handled)
 
     # Database connection status
     db_ok, db_info = check_database_connection()
     if db_ok:
-        total_tweets_query = """
-            SELECT COUNT(*) FROM twitter_sentiment
-        """
+        conn = None
         try:
-            conn = psycopg2.connect(
-                host=os.getenv('DB_HOST', 'localhost'),
-                port=int(os.getenv('DB_PORT', 54594)),
-                dbname=os.getenv('DB_NAME', 'pjx'),
-                user=os.getenv('DB_USER', 'postgres'),
-                password=os.getenv('DB_PASSWORD', 'postgres')
-            )
-            with conn.cursor() as cur:
-                cur.execute(total_tweets_query)
-                total_tweets = cur.fetchone()[0]
-            conn.close()
-
-            print(f"\n{Fore.WHITE}[DB] DATABASE:{Style.RESET_ALL} {total_tweets:,} total tweets | {db_info['total_rows']:,} total rows")
+            conn = get_db_connection()
+            if conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT COUNT(*) FROM twitter_sentiment")
+                    total_tweets = cur.fetchone()[0]
+                print(f"\n{Fore.WHITE}[DB] DATABASE:{Style.RESET_ALL} {total_tweets:,} total tweets | {db_info['total_rows']:,} total rows")
         except:
             pass
+        finally:
+            return_db_connection(conn)
+
+    # Show velocity metrics (sentiment momentum)
+    try:
+        velocity_data = get_velocity_metrics()
+        if velocity_data:
+            print(f"\n{Fore.WHITE}[VELOCITY] SENTIMENT MOMENTUM (15min vs 60min):{Style.RESET_ALL}")
+            print("-"*90)
+            for token, recent_sent, older_sent, change, count, bot_prob in velocity_data:
+                # Direction indicator
+                if change > 0.2:
+                    direction = f"{Fore.GREEN}▲▲{Style.RESET_ALL}"
+                    label = "STRONG UP"
+                elif change > 0:
+                    direction = f"{Fore.GREEN}▲{Style.RESET_ALL}"
+                    label = "UP"
+                elif change < -0.2:
+                    direction = f"{Fore.RED}▼▼{Style.RESET_ALL}"
+                    label = "STRONG DOWN"
+                else:
+                    direction = f"{Fore.RED}▼{Style.RESET_ALL}"
+                    label = "DOWN"
+
+                # Bot warning
+                bot_warn = f" {Fore.YELLOW}[BOT?]{Style.RESET_ALL}" if bot_prob and bot_prob > 0.5 else ""
+
+                print(f"  {direction} {token:<8} {label:<12} | Change: {change:+.2f} | Tweets: {count}{bot_warn}")
+    except Exception:
+        pass
+
+    # Show tracked errors with status
+    try:
+        errors = get_tracked_errors(5)
+        if errors:
+            print(f"\n{Fore.WHITE}[ERRORS] RECENT ISSUES:{Style.RESET_ALL}")
+            print("-"*90)
+            for err in errors:
+                try:
+                    # Calculate time ago (using UTC)
+                    age_seconds = (utc_now() - err['timestamp']).total_seconds()
+                    if age_seconds < 0:
+                        age_seconds = abs(age_seconds)
+                    if age_seconds < 60:
+                        age_str = f"{int(age_seconds)}s ago"
+                    elif age_seconds < 3600:
+                        age_str = f"{int(age_seconds/60)}m ago"
+                    else:
+                        age_str = f"{int(age_seconds/3600)}h ago"
+
+                    # Status indicator
+                    if err.get('resolved'):
+                        status = f"{Fore.GREEN}[RESOLVED]{Style.RESET_ALL}"
+                    elif err.get('handled'):
+                        status = f"{Fore.YELLOW}[HANDLED]{Style.RESET_ALL}"
+                    else:
+                        status = f"{Fore.RED}[ACTIVE]{Style.RESET_ALL}"
+
+                    scraper_name = str(err.get('scraper', 'unknown'))[:12]
+                    message = str(err.get('message', ''))
+                    print(f"  {status} {age_str:<8} [{scraper_name:<12}] {message}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Show recent tweet history at the bottom
+    try:
+        recent_tweets = get_recent_tweets(10)
+        if recent_tweets:
+            print(f"\n{Fore.WHITE}[HISTORY] LAST 10 TWEETS:{Style.RESET_ALL}")
+            print("-"*90)
+            for row in recent_tweets:
+                try:
+                    token, author, sentiment_label, sentiment_score, preview, scraped_at, source = row
+                    # Format timestamp - use UTC for comparison with PostgreSQL
+                    time_str = "?"
+                    if scraped_at:
+                        try:
+                            # Remove timezone info if present for comparison
+                            if hasattr(scraped_at, 'tzinfo') and scraped_at.tzinfo is not None:
+                                scraped_at = scraped_at.replace(tzinfo=None)
+                            age_seconds = (utc_now() - scraped_at).total_seconds()
+                            if age_seconds < 0:
+                                age_seconds = abs(age_seconds)
+                            if age_seconds < 60:
+                                time_str = f"{int(age_seconds)}s"
+                            elif age_seconds < 3600:
+                                time_str = f"{int(age_seconds/60)}m"
+                            else:
+                                time_str = f"{int(age_seconds/3600)}h"
+                        except:
+                            time_str = "?"
+
+                    # Sentiment color
+                    if sentiment_label == 'POSITIVE':
+                        sent_color = Fore.GREEN
+                        sent_icon = "+"
+                    elif sentiment_label == 'NEGATIVE':
+                        sent_color = Fore.RED
+                        sent_icon = "-"
+                    else:
+                        sent_color = Fore.WHITE
+                        sent_icon = "~"
+
+                    # Clean up preview text
+                    preview_clean = (str(preview) if preview else "")[:50].replace('\n', ' ').replace('\r', '')
+                    author_clean = (str(author) if author else "unknown")[:12]
+                    token_clean = str(token or "?")[:6]
+
+                    print(f"  {time_str:<4} {sent_color}{sent_icon}{Style.RESET_ALL} {token_clean:<6} @{author_clean:<12} {preview_clean}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
     dashboard_update_time = datetime.now()
     print("\n" + "="*90)
-    print(f"Auto-refresh: 15s | Press Ctrl+C to stop | Next update: {(dashboard_update_time + timedelta(seconds=15)).strftime('%H:%M:%S')}")
+    print(f"Auto-refresh: 10s | Press Ctrl+C to stop | Next update: {(dashboard_update_time + timedelta(seconds=10)).strftime('%H:%M:%S')}")
     print("="*90)
 
 def main():
@@ -539,13 +760,22 @@ def main():
 
     # Wait a moment for scrapers to initialize, then show first dashboard
     time.sleep(3)
-    display_dashboard()
+    try:
+        display_dashboard()
+    except Exception as e:
+        print(f"{Fore.RED}[DASHBOARD ERROR] {e}{Style.RESET_ALL}")
 
     # Main loop - display dashboard with 15-second updates
     try:
         while True:
-            time.sleep(15)  # Update every 15 seconds for real-time monitoring
-            display_dashboard()
+            time.sleep(10)  # Update every 10 seconds for real-time monitoring
+            try:
+                display_dashboard()
+            except Exception as e:
+                print(f"{Fore.RED}[DASHBOARD ERROR] {e}{Style.RESET_ALL}")
+                import traceback
+                traceback.print_exc()
+                time.sleep(5)  # Brief pause before retrying
     except KeyboardInterrupt:
         print(f"\n{Fore.YELLOW}[SHUTDOWN] Stopping all Twitter scrapers...{Style.RESET_ALL}")
         stop_all_scrapers()

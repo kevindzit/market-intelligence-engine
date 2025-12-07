@@ -48,11 +48,22 @@ class TwitterAccountPool:
 
         Returns:
             tuple: (acquired: bool, should_refresh: bool)
-                - acquired=True: We got the lock, should refresh
-                - acquired=False, should_refresh=False: Another process is refreshing, wait for them
+                - acquired=True, should_refresh=True: We got the lock, should refresh
+                - acquired=True, should_refresh=False: We got lock but cookies were already refreshed by another process
+                - acquired=False, should_refresh=False: Timeout waiting for lock
         """
         lock_file = Path(str(cookies_file) + ".lock")
         start_time = time.time()
+        waited_for_other_process = False
+
+        # Record cookies file mtime BEFORE we start, to detect if another process refreshes it
+        cookies_path = Path(cookies_file)
+        initial_mtime = None
+        try:
+            if cookies_path.exists():
+                initial_mtime = cookies_path.stat().st_mtime
+        except:
+            pass
 
         # Try to acquire lock
         while True:
@@ -69,6 +80,16 @@ class TwitterAccountPool:
                         content = lock_file.read_text().strip()
                         if content.startswith(str(os.getpid())):
                             # We successfully acquired the lock
+                            # If we waited for another process, check if cookies were already refreshed
+                            if waited_for_other_process and initial_mtime is not None:
+                                try:
+                                    current_mtime = cookies_path.stat().st_mtime
+                                    if current_mtime > initial_mtime:
+                                        # Cookies were refreshed while we waited - skip refresh
+                                        print(f"[Cookie Lock] Cookies already refreshed by another process (mtime changed)")
+                                        return (True, False)
+                                except:
+                                    pass
                             return (True, True)
                 except:
                     # Failed to create lock, another process might have beaten us
@@ -98,7 +119,8 @@ class TwitterAccountPool:
                 print(f"[Cookie Lock] Timeout after {timeout}s waiting for refresh lock")
                 return (False, False)
 
-            # Wait and retry
+            # Wait and retry - mark that we waited
+            waited_for_other_process = True
             print(f"[Cookie Lock] Another process is refreshing cookies, waiting... ({elapsed:.0f}s/{timeout}s)")
             time.sleep(5)
 
@@ -133,11 +155,9 @@ class TwitterAccountPool:
                 continue
             cookies_files.append((int(match.group(1)), path, f"Account {match.group(1)}"))
 
-        # Optionally include the main cookies.json as the next account in rotation
-        main_cookies = cookies_dir / "cookies.json"
-        if main_cookies.exists() and "backup" not in main_cookies.name.lower():
-            next_num = (max([num for num, _, _ in cookies_files], default=0) + 1) or 1
-            cookies_files.append((next_num, main_cookies, "Main Account"))
+        # NOTE: Main cookies.json excluded from pool - use only numbered accounts
+        # The main account often becomes stale and causes errors
+        # If you need more accounts, create cookies_account5.json etc.
 
         # Sort by account number for deterministic rotation
         cookies_files.sort(key=lambda item: item[0])
