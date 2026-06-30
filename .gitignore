@@ -82,3 +82,17 @@ pjx_postgres_backup.sql
 
 # Lock files
 *.lock
+
+# session cookies and browser state (never commit)
+*.pkl
+.browser_sessions/
+browser_workspace/cookies_*.pkl
+browser_workspace/storage_*.json
+
+# scratch and data dumps
+backup/
+downloaded_files/
+
+# tooling
+.claude/
+CLAUDE.md
