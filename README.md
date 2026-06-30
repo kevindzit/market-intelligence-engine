@@ -1,10 +1,10 @@
-# PJX — Crypto Market Intelligence & Signal Platform
+# Market Intelligence & Signal Engine
 
 A modular, distributed system that collects crypto market and sentiment data from 25+ sources, stores it in PostgreSQL, and uses an LLM ensemble plus rule-based analysis to generate market signals.
 
 ## Overview
 
-PJX is built around four layers:
+The system is built around four layers:
 
 - **Data collection** — 25+ scrapers covering social sentiment (Twitter/X), Binance market data, DeFi metrics, and traditional finance (Senate/House trades, SEC EDGAR, FRED, news).
 - **Storage** — a PostgreSQL warehouse (38 tables with indexes and signal-detection functions).
