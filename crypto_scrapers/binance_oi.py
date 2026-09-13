@@ -163,6 +163,7 @@ class OpenInterestScraper:
 
         try:
             for oi in oi_data:
+                cursor.execute("SAVEPOINT record_save")
                 try:
                     cursor.execute("""
                         INSERT INTO open_interest
@@ -176,13 +177,16 @@ class OpenInterestScraper:
                     saved += 1
 
                 except Exception as e:
-                    self.db_conn.rollback()
+                    cursor.execute("ROLLBACK TO SAVEPOINT record_save")
+                    print(f"[WARNING] Failed to insert record: {e}")
+                cursor.execute("RELEASE SAVEPOINT record_save")
 
             self.db_conn.commit()
 
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
             self.db_conn.rollback()
+            saved = 0
 
         finally:
             cursor.close()
