@@ -354,6 +354,7 @@ class TwitterTokenScraperBase:
             print("[ERROR] Could not get database connection to save tweets")
             return 0
 
+        cursor = None
         try:
             cursor = conn.cursor()
 
@@ -435,6 +436,7 @@ class TwitterTokenScraperBase:
                         token=token
                     )
 
+                    cursor.execute("SAVEPOINT token_tweet")
                     try:
                         cursor.execute("""
                             INSERT INTO twitter_sentiment
@@ -478,15 +480,16 @@ class TwitterTokenScraperBase:
                             round(momentum_score, 6) if momentum_score is not None else None
                         ))
 
+                    except Exception as e:
+                        cursor.execute("ROLLBACK TO SAVEPOINT token_tweet")
+                        print(f"[WARNING] Failed to insert tweet: {e}")
+                    else:
                         if cursor.rowcount > 0:
                             saved += 1
-
-                    except Exception as e:
-                        print(f"[WARNING] Failed to insert tweet: {e}")
-                        conn.rollback()
+                    finally:
+                        cursor.execute("RELEASE SAVEPOINT token_tweet")
 
             conn.commit()
-            cursor.close()
 
             print(f"[OK] Saved {saved} new tweets")
 
@@ -509,7 +512,10 @@ class TwitterTokenScraperBase:
             return 0
 
         finally:
-            if conn:
+            try:
+                if cursor is not None:
+                    cursor.close()
+            finally:
                 self.db_pool.return_connection(conn)
 
     async def run_cycle(self):
