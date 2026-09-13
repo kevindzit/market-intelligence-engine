@@ -70,6 +70,40 @@ PostgreSQL with 38 tables, including twitter_sentiment, crypto_ohlcv, order_book
 psql -h localhost -p <port> -U postgres -d postgres -f data/pjx_database_schema.sql
 ```
 
+### Binance database writes
+
+The OHLCV, funding, open interest, order book, and liquidation writers use a
+savepoint for each record. A rejected record is skipped without undoing the valid
+records in the batch. Counts are reported after the final commit succeeds.
+An OHLCV update counts as a saved record, so the count is not the number of new
+or unique candles.
+
+If the final commit fails, the polling writers return zero. The liquidation
+writer keeps its pending queue for a later retry and prints no success summary.
+After a successful commit, its summary includes only the records that were saved.
+
+### Database tests
+
+Use Python 3.12 and a disposable PostgreSQL database:
+
+```bash
+python -m pip install -r requirements-test.txt
+export TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/market_tests"
+python -m unittest discover -s tests -v
+```
+
+In PowerShell, set the connection string with
+`$env:TEST_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/market_tests"`.
+
+The tests create session-only tables using the column definitions in
+`data/pjx_database_schema.sql`. They check the committed rows, saved counts,
+OHLCV updates, and recovery after row and commit errors. A deferred database
+trigger forces the commit error. API clients and `.env` loading are stubbed;
+database writes use psycopg2 and the actual scraper methods.
+
+GitHub Actions runs these tests against PostgreSQL 16. No API keys or access to
+Binance are needed. These tests cover the five Binance database writers.
+
 ## Decision Layer (crypto_ai_trader/)
 
 | Module | Purpose |

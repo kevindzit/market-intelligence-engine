@@ -169,6 +169,7 @@ class OrderBookScraper:
 
         try:
             for record in records:
+                cursor.execute("SAVEPOINT record_save")
                 try:
                     cursor.execute("""
                         INSERT INTO order_book_depth
@@ -181,9 +182,9 @@ class OrderBookScraper:
                     """, record)
                     saved += 1
                 except Exception as e:
-                    print(f"[WARNING] Failed to insert {record['token']}: {e}")
-                    # Don't rollback the entire transaction, just skip this record
-                    continue
+                    cursor.execute("ROLLBACK TO SAVEPOINT record_save")
+                    print(f"[WARNING] Failed to insert record: {e}")
+                cursor.execute("RELEASE SAVEPOINT record_save")
 
             self.db_conn.commit()
 
@@ -193,6 +194,7 @@ class OrderBookScraper:
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
             self.db_conn.rollback()
+            saved = 0
 
         finally:
             cursor.close()

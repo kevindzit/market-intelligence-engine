@@ -151,11 +151,13 @@ class LiquidationScraper:
         if not self.pending_liquidations:
             return
 
-        saved = 0
+        saved_records = []
+        cursor = None
         try:
             cursor = self.db_conn.cursor()
 
             for liq in self.pending_liquidations:
+                cursor.execute("SAVEPOINT record_save")
                 try:
                     cursor.execute("""
                         INSERT INTO liquidations
@@ -163,44 +165,50 @@ class LiquidationScraper:
                         VALUES (%(token)s, %(side)s, %(liquidation_value)s,
                                 %(price)s, %(quantity)s, %(timestamp)s, %(source)s)
                     """, liq)
-                    saved += 1
+                    saved_records.append(liq)
                 except Exception as e:
-                    # Skip duplicates or errors
-                    pass
+                    cursor.execute("ROLLBACK TO SAVEPOINT record_save")
+                    print(f"[WARNING] Failed to insert liquidation: {e}")
+                cursor.execute("RELEASE SAVEPOINT record_save")
 
             self.db_conn.commit()
-            cursor.close()
-
-            if saved > 0:
-                # Aggregate for display
-                aggregated = self.aggregate_liquidations(self.pending_liquidations)
-
-                print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Saved {saved} liquidations")
-
-                # Show top liquidated tokens
-                sorted_tokens = sorted(aggregated.items(),
-                                     key=lambda x: x[1]['total_value'], reverse=True)
-
-                for token, data in sorted_tokens[:5]:
-                    total_value = data['total_value']
-                    long_pct = (data['long_liquidations'] / total_value * 100) if total_value > 0 else 0
-                    short_pct = (data['short_liquidations'] / total_value * 100) if total_value > 0 else 0
-
-                    signal = ""
-                    if total_value > 1000000:
-                        if long_pct > 70:
-                            signal = "[LONG SQUEEZE]"
-                        elif short_pct > 70:
-                            signal = "[SHORT SQUEEZE]"
-
-                    print(f"  {token:<8} ${total_value:>12,.0f} "
-                          f"(Longs: {long_pct:>5.1f}% Shorts: {short_pct:>5.1f}%) {signal}")
-
-            # Clear pending liquidations
-            self.pending_liquidations = []
 
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
+            self.db_conn.rollback()
+            return
+
+        finally:
+            if cursor is not None:
+                cursor.close()
+
+        # Clear the queue only after a successful commit
+        self.pending_liquidations = []
+        saved = len(saved_records)
+
+        if saved > 0:
+            aggregated = self.aggregate_liquidations(saved_records)
+
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Saved {saved} liquidations")
+
+            # Show top liquidated tokens
+            sorted_tokens = sorted(aggregated.items(),
+                                 key=lambda x: x[1]['total_value'], reverse=True)
+
+            for token, data in sorted_tokens[:5]:
+                total_value = data['total_value']
+                long_pct = (data['long_liquidations'] / total_value * 100) if total_value > 0 else 0
+                short_pct = (data['short_liquidations'] / total_value * 100) if total_value > 0 else 0
+
+                signal = ""
+                if total_value > 1000000:
+                    if long_pct > 70:
+                        signal = "[LONG SQUEEZE]"
+                    elif short_pct > 70:
+                        signal = "[SHORT SQUEEZE]"
+
+                print(f"  {token:<8} ${total_value:>12,.0f} "
+                      f"(Longs: {long_pct:>5.1f}% Shorts: {short_pct:>5.1f}%) {signal}")
 
     def aggregate_liquidations(self, liquidations):
         """Aggregate liquidations by token"""

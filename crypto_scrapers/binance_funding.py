@@ -127,6 +127,7 @@ class FundingRateScraper:
 
         try:
             for record in records:
+                cursor.execute("SAVEPOINT record_save")
                 try:
                     cursor.execute("""
                         INSERT INTO funding_rates
@@ -136,14 +137,16 @@ class FundingRateScraper:
                     """, record)
                     saved += 1
                 except Exception as e:
-                    print(f"[WARNING] Failed to insert {record['token']}: {e}")
-                    self.db_conn.rollback()
+                    cursor.execute("ROLLBACK TO SAVEPOINT record_save")
+                    print(f"[WARNING] Failed to insert record: {e}")
+                cursor.execute("RELEASE SAVEPOINT record_save")
 
             self.db_conn.commit()
 
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
             self.db_conn.rollback()
+            saved = 0
 
         finally:
             cursor.close()

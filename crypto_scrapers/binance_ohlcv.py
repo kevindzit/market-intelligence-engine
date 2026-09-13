@@ -153,8 +153,9 @@ class BinanceOHLCVScraper:
         saved = 0
 
         try:
-            # Use batch insert for efficiency
+            # Keep a bad record from rolling back earlier inserts
             for record in all_records:
+                cursor.execute("SAVEPOINT record_save")
                 try:
                     cursor.execute("""
                         INSERT INTO crypto_ohlcv
@@ -172,14 +173,16 @@ class BinanceOHLCVScraper:
                     """, record)
                     saved += 1
                 except Exception as e:
+                    cursor.execute("ROLLBACK TO SAVEPOINT record_save")
                     print(f"[WARNING] Failed to insert record: {e}")
-                    self.db_conn.rollback()
+                cursor.execute("RELEASE SAVEPOINT record_save")
 
             self.db_conn.commit()
 
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
             self.db_conn.rollback()
+            saved = 0
 
         finally:
             cursor.close()
