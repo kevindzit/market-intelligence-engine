@@ -91,3 +91,46 @@ python -m unittest discover -s tests -v
 
 The existing `.github/workflows/tests.yml` discovers all of these tests and
 runs them against PostgreSQL 16. No new workflow or dependency is needed.
+
+## Yahoo profiles and whale tweets
+
+`test_profile_whale_saves.py` covers the Yahoo Finance profile writer and
+`WhaleTracker.save_to_db()`.
+
+The profile writer uses a savepoint for each company upsert. Rejected profiles
+do not discard valid inserts or updates from earlier in the run. Fetch errors
+are logged separately from database errors. The final total counts successful
+upserts, including updates to existing companies, after the batch commits.
+The function still returns no value.
+
+The whale writer uses a savepoint for each `(tweet_id, token)` record. If one
+token fails, other tokens from the same tweet can still be saved. Its return
+value counts newly inserted database records, so one tweet can add more than
+one record. Console totals now say tweet/token records. Duplicate pairs are
+skipped. The high signal summary counts distinct tweets with at least one
+newly inserted token record, and is printed only after the commit succeeds.
+
+On a failed commit, the profile writer skips its success summary and the whale
+writer returns zero without printing a saved total. The whale writer closes
+its cursor and returns the connection to the pool on both success and failure.
+
+Tests use the committed `company_profiles` and `twitter_sentiment` schemas,
+including the 255 character company name limit, the 20 character token limit,
+and the sentiment check constraints. A deferred trigger tests commit failure.
+They also cover preserved updates, unavailable Yahoo data, duplicates, partial
+token failures, high signal totals, empty inputs, missing connections, and
+connection reuse after rollback.
+
+Yahoo responses, Twitter setup, sentiment helper outputs, and pool handoff
+calls are stubbed. The pool hands out a real psycopg2 connection. The connection
+subclass only records cursors so the tests can check cleanup; it does not mock
+SQL execution. Saved rows are read through a separate database connection.
+No Yahoo, Twitter, model, or local credential setup is needed for these tests.
+
+Run this group with the same disposable database:
+
+```bash
+python -m unittest discover -s tests -p "test_profile_whale_saves.py" -v
+```
+
+The existing full suite command and PostgreSQL 16 workflow also run this group.
