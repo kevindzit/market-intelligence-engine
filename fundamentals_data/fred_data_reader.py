@@ -73,11 +73,18 @@ def fetch_and_store_fred_data():
 
                     # The result is a pandas Series, get the last (most recent) value
                     latest_date = data.index[-1].date()
-                    
-                    # *** THIS IS THE FIX ***
+
                     # Convert the numpy float to a standard Python float before saving
                     latest_value = float(data.iloc[-1])
 
+                except Exception as e:
+                    logging.error(f"Failed to fetch or read data for {code}. Error: {e}")
+                    continue
+                finally:
+                    time.sleep(1) # Be polite to the API
+
+                cur.execute("SAVEPOINT indicator_save")
+                try:
                     # Insert into the database, ignoring duplicates
                     insert_query = """
                     INSERT INTO economic_indicators (indicator_code, date, value)
@@ -86,19 +93,20 @@ def fetch_and_store_fred_data():
                     """
                     cur.execute(insert_query, (code, latest_date, latest_value))
 
+                except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT indicator_save")
+                    logging.error(f"Database insert failed for indicator {code}. Error: {e}")
+                else:
                     if cur.rowcount > 0:
                         total_added_count += 1
-                        logging.info(f"  > New data for {code} on {latest_date}: {latest_value}")
-
-                except Exception as e:
-                    logging.error(f"Failed to fetch or store data for {code}. Error: {e}")
-                
-                time.sleep(1) # Be polite to the API
+                        logging.info(f"  > Queued data for {code} on {latest_date}: {latest_value}")
+                cur.execute("RELEASE SAVEPOINT indicator_save")
 
         conn.commit()
     except Exception as e:
         logging.error(f"An error occurred during database operations: {e}")
         conn.rollback()
+        return
     finally:
         if conn:
             conn.close()
