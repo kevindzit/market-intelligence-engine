@@ -169,6 +169,7 @@ def fetch_and_store_sec_filings():
                 ON CONFLICT (filing_url) DO NOTHING;
                 """
 
+                cur.execute("SAVEPOINT filing_save")
                 try:
                     cur.execute(insert_query, (
                         parsed_title['cik'],
@@ -177,17 +178,20 @@ def fetch_and_store_sec_filings():
                         filing_date,
                         filing_url
                     ))
+                except Exception as e:
+                    cur.execute("ROLLBACK TO SAVEPOINT filing_save")
+                    logging.error(f"Database insert failed for URL {filing_url}. Error: {e}")
+                else:
                     if cur.rowcount > 0:
                         added_count += 1
-                        logging.info(f"  > New Filing: {parsed_title['form_type']} for {parsed_title['company_name']}")
-                except Exception as e:
-                    logging.error(f"Database insert failed for URL {filing_url}. Error: {e}")
-                    conn.rollback() # Rollback this specific failed transaction
+                        logging.info(f"  > Queued filing: {form_type} for {parsed_title['company_name']}")
+                cur.execute("RELEASE SAVEPOINT filing_save")
 
         conn.commit()
     except Exception as e:
         logging.error(f"An error occurred during database operations: {e}")
         conn.rollback()
+        return
     finally:
         if conn:
             conn.close()
