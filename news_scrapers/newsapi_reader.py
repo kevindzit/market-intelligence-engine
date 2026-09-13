@@ -95,6 +95,7 @@ def fetch_and_store_news():
                 logging.warning(f"Skipping article with missing URL or title")
                 continue
 
+            cursor.execute("SAVEPOINT article_save")
             try:
                 # Insert into PostgreSQL (ON CONFLICT prevents duplicates just like ChromaDB)
                 cursor.execute("""
@@ -104,11 +105,13 @@ def fetch_and_store_news():
                 """, (title, content, url, source, published_at))
 
                 if cursor.rowcount > 0:
+                    logging.debug(f"Queued article: {title[:50]}...")
                     added_count += 1
-                    logging.debug(f"Added article: {title[:50]}...")
 
             except Exception as e:
+                cursor.execute("ROLLBACK TO SAVEPOINT article_save")
                 logging.error(f"Error adding article to database: {e}")
+            cursor.execute("RELEASE SAVEPOINT article_save")
 
         # Commit all inserts
         conn.commit()
