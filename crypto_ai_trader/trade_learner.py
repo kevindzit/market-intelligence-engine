@@ -265,9 +265,6 @@ class TradeLearner:
                 'timestamp': datetime.now()
             }
 
-            # Add to experience buffer
-            self.experience_buffer.append(experience)
-
             # Store in database
             with self.conn.cursor() as cursor:
                 cursor.execute("""
@@ -286,6 +283,8 @@ class TradeLearner:
                 ))
                 self.conn.commit()
 
+            self.experience_buffer.append(experience)
+
             # Update pattern memory
             self._update_pattern_memory(pattern_hash, context, outcome)
 
@@ -302,6 +301,7 @@ class TradeLearner:
             print(f"[LEARN] Recorded experience - Reward: {actual_reward:.3f}, Self-reward: {self_reward:.3f}")
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to record experience: {e}")
 
     def _calculate_actual_reward(self, outcome: Dict) -> float:
@@ -820,6 +820,7 @@ class TradeLearner:
                 return cursor.fetchone()
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to get pattern performance: {e}")
             return None
 
@@ -870,6 +871,7 @@ class TradeLearner:
                 return dict(result)
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to get pattern performance with validation: {e}")
             # Fallback to legacy method
             return self._get_pattern_performance(pattern_hash)
@@ -916,6 +918,7 @@ class TradeLearner:
                 return None
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to get token statistics: {e}")
             return None
 
@@ -1009,6 +1012,7 @@ class TradeLearner:
                 return None
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to get best strategy: {e}")
             return None
 
@@ -1122,6 +1126,7 @@ class TradeLearner:
                 report['learning_curve'] = cursor.fetchall()
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to generate report: {e}")
 
         return report
@@ -1229,6 +1234,7 @@ class TradeLearner:
                 cursor.execute("SELECT pattern_hash, success_rate, occurrences FROM pattern_memory WHERE occurrences >= 3 ORDER BY success_rate DESC LIMIT %s", (limit,))
                 return [{'pattern_type': p['pattern_hash'][:20], 'success_rate': p['success_rate'], 'count': p['occurrences']} for p in cursor.fetchall()]
         except:
+            self.conn.rollback()
             return []
 
     def get_evolved_parameters(self) -> Dict:

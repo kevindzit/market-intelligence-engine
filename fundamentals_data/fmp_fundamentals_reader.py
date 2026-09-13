@@ -88,7 +88,31 @@ def fetch_and_store_fundamentals():
                     # FMP returns a list, even for a single ticker
                     profile = data[0]
 
-                    # SQL to insert a new company or update an existing one
+                    values = (
+                        profile.get('symbol'),
+                        profile.get('companyName'),
+                        profile.get('exchangeShortName'),
+                        profile.get('industry'),
+                        profile.get('sector'),
+                        profile.get('mktCap'),
+                        profile.get('beta'),
+                        profile.get('price') / profile.get('eps') if profile.get('eps') and profile.get('price') else None,
+                        profile.get('eps'),
+                        profile.get('website'),
+                        datetime.now(timezone.utc)
+                    )
+                except requests.exceptions.HTTPError as e:
+                    logging.error(f"HTTP error for {ticker}. Maybe a free tier limit or invalid symbol? Error: {e}")
+                    continue
+                except Exception as e:
+                    logging.error(f"Failed to fetch profile for {ticker}. Error: {e}")
+                    continue
+                finally:
+                    time.sleep(1) # Be polite to the API to avoid rate limiting
+
+                # Keep a rejected profile from rolling back the rest of the batch
+                cur.execute("SAVEPOINT company_profile")
+                try:
                     upsert_query = """
                     INSERT INTO company_profiles (
                         symbol, company_name, exchange, industry, sector,
@@ -107,33 +131,22 @@ def fetch_and_store_fundamentals():
                         last_updated = EXCLUDED.last_updated;
                     """
 
-                    cur.execute(upsert_query, (
-                        profile.get('symbol'),
-                        profile.get('companyName'),
-                        profile.get('exchangeShortName'),
-                        profile.get('industry'),
-                        profile.get('sector'),
-                        profile.get('mktCap'),
-                        profile.get('beta'),
-                        profile.get('price') / profile.get('eps') if profile.get('eps') and profile.get('price') else None, # Calculate P/E
-                        profile.get('eps'),
-                        profile.get('website'),
-                        datetime.now(timezone.utc)
-                    ))
-                    updated_count += 1
-                    logging.info(f"  > Successfully upserted data for {ticker}.")
-
-                except requests.exceptions.HTTPError as e:
-                    logging.error(f"HTTP error for {ticker}. Maybe a free tier limit or invalid symbol? Error: {e}")
+                    cur.execute(upsert_query, values)
                 except Exception as e:
-                    logging.error(f"Failed to fetch or store data for {ticker}. Error: {e}")
-
-                time.sleep(1) # Be polite to the API to avoid rate limiting
+                    cur.execute("ROLLBACK TO SAVEPOINT company_profile")
+                    logging.error(f"Database upsert failed for {ticker}. Error: {e}")
+                else:
+                    if cur.rowcount > 0:
+                        updated_count += 1
+                        logging.info(f"  > Queued profile for {ticker}.")
+                finally:
+                    cur.execute("RELEASE SAVEPOINT company_profile")
 
         conn.commit()
     except Exception as e:
         logging.error(f"An error occurred during database operations: {e}")
         conn.rollback()
+        return
     finally:
         if conn:
             conn.close()

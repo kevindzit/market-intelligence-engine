@@ -275,6 +275,7 @@ class StablecoinFlowScraper:
         except Exception as e:
             print(f"[ERROR] Failed to save metrics: {e}")
             self.db_conn.rollback()
+            return 0
 
         return saved_count
 

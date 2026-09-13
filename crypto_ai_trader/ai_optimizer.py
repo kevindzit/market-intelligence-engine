@@ -521,6 +521,7 @@ Provide balanced standard analysis."""
                     ]
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to track decision: {e}")
 
     def get_best_model_for_scenario(self, scenario: str) -> Optional[Dict]:
@@ -555,6 +556,7 @@ Provide balanced standard analysis."""
                 return None
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to get best model: {e}")
             return None
 
@@ -587,6 +589,7 @@ Provide balanced standard analysis."""
                 return None
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to get token performance: {e}")
             return None
 
@@ -626,6 +629,7 @@ Provide balanced standard analysis."""
                 return None
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to get recent performance: {e}")
             return None
 
@@ -711,6 +715,7 @@ Provide balanced standard analysis."""
                     self.model_performance[model]['total_pnl'] = float(row[3]) if row[3] else 0
 
         except Exception as e:
+            self.conn.rollback()
             print(f"[ERROR] Failed to load model performance: {e}")
 
     def close(self):
