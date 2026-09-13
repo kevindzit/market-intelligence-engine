@@ -337,10 +337,11 @@ class WhaleTracker:
             print("[ERROR] Could not get database connection to save whale tweets")
             return 0
 
+        cursor = None
         try:
             cursor = conn.cursor()
             saved = 0
-            high_signal_tweets = []
+            high_signal_tweets = set()
 
             for tweet in all_tweets:
                 # Analyze sentiment
@@ -383,15 +384,6 @@ class WhaleTracker:
                 else:
                     alert_level = "LOW"
 
-                # Track high signal tweets for alerts
-                if alert_level in ["WHALE_SIGNAL", "HIGH"] and tweet['mentioned_tokens']:
-                    high_signal_tweets.append({
-                        'username': tweet['username'],
-                        'tokens': tweet['mentioned_tokens'],
-                        'text_preview': tweet['text'][:100],
-                        'signal': signal_strength
-                    })
-
                 # Save each mentioned token as separate entry
                 tokens_to_save = tweet['mentioned_tokens'] if tweet['mentioned_tokens'] else ['GENERAL']
 
@@ -406,6 +398,7 @@ class WhaleTracker:
                 )
 
                 for token in tokens_to_save:
+                    cursor.execute("SAVEPOINT tweet_save")
                     try:
                         cursor.execute("""
                             INSERT INTO twitter_sentiment
@@ -449,17 +442,19 @@ class WhaleTracker:
                             None   # momentum_score - N/A for account-based
                         ))
 
+                    except Exception as e:
+                        cursor.execute("ROLLBACK TO SAVEPOINT tweet_save")
+                        print(f"[WARNING] Failed to insert whale tweet: {e}")
+                    else:
                         if cursor.rowcount > 0:
                             saved += 1
-
-                    except Exception as e:
-                        print(f"[WARNING] Failed to insert whale tweet: {e}")
-                        conn.rollback()
+                            if alert_level in ["WHALE_SIGNAL", "HIGH"] and tweet['mentioned_tokens']:
+                                high_signal_tweets.add(tweet['tweet_id'])
+                    cursor.execute("RELEASE SAVEPOINT tweet_save")
 
             conn.commit()
-            cursor.close()
 
-            print(f"\n[OK] Saved {saved} new whale tweets")
+            print(f"\n[OK] Saved {saved} new whale tweet/token records")
 
             # Show count of high signal tweets without previews
             if high_signal_tweets:
@@ -474,7 +469,10 @@ class WhaleTracker:
             return 0
 
         finally:
-            if conn:
+            try:
+                if cursor is not None:
+                    cursor.close()
+            finally:
                 self.db_pool.return_connection(conn)
 
     async def run_cycle(self):
@@ -597,12 +595,12 @@ class WhaleTracker:
                 whales_active.add(tweet['username'])
 
             print(f"\nCycle Summary:")
-            print(f"  New whale tweets: {saved}")
+            print(f"  New whale tweet/token records: {saved}")
             print(f"  Tokens mentioned: {len(tokens_mentioned)}")
             print(f"  Active whales: {len(whales_active)}")
         else:
             print(f"\nCycle Summary:")
-            print(f"  New whale tweets: 0")
+            print(f"  New whale tweet/token records: 0")
             print(f"  Tokens mentioned: 0")
             print(f"  Active whales: 0")
 

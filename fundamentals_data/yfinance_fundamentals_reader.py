@@ -80,7 +80,15 @@ def fetch_and_store_fundamentals():
                     if not info or 'symbol' not in info:
                         logging.warning(f"No data returned for {ticker_symbol}.")
                         continue
-                    
+
+                except Exception as e:
+                    logging.error(f"Failed to fetch or read data for {ticker_symbol}. Error: {e}")
+                    continue
+                finally:
+                    time.sleep(1) # Be polite to avoid getting temporarily blocked by Yahoo
+
+                cur.execute("SAVEPOINT profile_save")
+                try:
                     # SQL to insert a new company or update an existing one
                     upsert_query = """
                     INSERT INTO company_profiles (
@@ -113,18 +121,21 @@ def fetch_and_store_fundamentals():
                         info.get('website'),
                         datetime.now(timezone.utc)
                     ))
-                    updated_count += 1
-                    logging.info(f"  > Successfully upserted data for {ticker_symbol}.")
 
                 except Exception as e:
-                    logging.error(f"Failed to fetch or store data for {ticker_symbol}. Error: {e}")
-
-                time.sleep(1) # Be polite to avoid getting temporarily blocked by Yahoo
+                    cur.execute("ROLLBACK TO SAVEPOINT profile_save")
+                    logging.error(f"Database upsert failed for {ticker_symbol}. Error: {e}")
+                else:
+                    if cur.rowcount > 0:
+                        updated_count += 1
+                        logging.info(f"  > Queued profile for {ticker_symbol}.")
+                cur.execute("RELEASE SAVEPOINT profile_save")
 
         conn.commit()
     except Exception as e:
         logging.error(f"An error occurred during database operations: {e}")
         conn.rollback()
+        return
     finally:
         if conn:
             conn.close()
