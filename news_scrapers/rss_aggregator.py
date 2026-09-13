@@ -114,6 +114,7 @@ def store_articles(articles):
 
     try:
         for article in articles:
+            cursor.execute("SAVEPOINT article_save")
             try:
                 cursor.execute("""
                     INSERT INTO news_articles (title, content, url, source, published_at)
@@ -131,13 +132,16 @@ def store_articles(articles):
                     added_count += 1
 
             except Exception as e:
+                cursor.execute("ROLLBACK TO SAVEPOINT article_save")
                 logging.error(f"Error inserting article: {e}")
+            cursor.execute("RELEASE SAVEPOINT article_save")
 
         conn.commit()
 
     except Exception as e:
         logging.error(f"Database error: {e}")
         conn.rollback()
+        added_count = 0
     finally:
         cursor.close()
         conn.close()
