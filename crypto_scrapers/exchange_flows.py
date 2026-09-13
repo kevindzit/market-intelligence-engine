@@ -173,13 +173,21 @@ class ExchangeFlowScraper:
             "CREATE INDEX IF NOT EXISTS idx_flows_smart_money ON exchange_flows(is_smart_money)",
             "CREATE INDEX IF NOT EXISTS idx_flows_signal ON exchange_flows(signal_strength DESC)"
         ]
-        with self.db_conn.cursor() as cursor:
-            for stmt in indexes:
-                try:
-                    cursor.execute(stmt)
-                except Exception:
-                    self.db_conn.rollback()
-        self.db_conn.commit()
+        try:
+            with self.db_conn.cursor() as cursor:
+                for stmt in indexes:
+                    cursor.execute("SAVEPOINT flow_index")
+                    try:
+                        cursor.execute(stmt)
+                    except Exception as e:
+                        cursor.execute("ROLLBACK TO SAVEPOINT flow_index")
+                        print(f"[WARNING] Failed to create flow index: {e}")
+                    finally:
+                        cursor.execute("RELEASE SAVEPOINT flow_index")
+            self.db_conn.commit()
+        except Exception:
+            self.db_conn.rollback()
+            raise
 
     def get_btc_flows(self):
         """Get Bitcoin exchange flows using blockchain.info API (free)"""
@@ -408,6 +416,7 @@ class ExchangeFlowScraper:
 
         try:
             for flow in flows:
+                cursor.execute("SAVEPOINT exchange_flow")
                 try:
                     # Check if we already have this transaction
                     cursor.execute("""
@@ -439,17 +448,21 @@ class ExchangeFlowScraper:
                                 %(is_smart_money)s, %(smart_money_type)s, %(signal_strength)s)
                     """, flow)
 
-                    saved += 1
-
                 except Exception as e:
+                    cursor.execute("ROLLBACK TO SAVEPOINT exchange_flow")
                     print(f"[WARNING] Failed to save flow: {e}")
-                    self.db_conn.rollback()
+                else:
+                    if cursor.rowcount > 0:
+                        saved += 1
+                finally:
+                    cursor.execute("RELEASE SAVEPOINT exchange_flow")
 
             self.db_conn.commit()
 
         except Exception as e:
             print(f"[ERROR] Database save failed: {e}")
             self.db_conn.rollback()
+            return 0
 
         finally:
             cursor.close()
