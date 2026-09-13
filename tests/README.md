@@ -1,4 +1,6 @@
-# News database tests
+# Database tests
+
+## News writers
 
 These tests cover `rss_aggregator.store_articles()` and
 `newsapi_reader.fetch_and_store_news()`.
@@ -42,3 +44,50 @@ No feed or NewsAPI credentials are needed.
 
 GitHub Actions runs these tests against PostgreSQL 16. This workflow has its own
 filename and can run alongside the Binance database workflow.
+
+## FRED and EDGAR writers
+
+`test_fundamentals_saves.py` covers `fetch_and_store_fred_data()` and
+`fetch_and_store_sec_filings()`.
+
+Both writers use a savepoint for each insert. A rejected indicator or filing
+is rolled back on its own, so valid rows before and after it can still be saved.
+Neither function returns a count. Their final log messages report new rows
+only after the transaction commits. Duplicate records do not increase the count.
+Messages inside the transaction say a record is queued, since it is not saved yet.
+
+FRED logs fetch or data reading errors separately from database insert errors.
+It continues with the next indicator in either case. Failed commits roll back
+the batch and do not produce a success summary. EDGAR also skips its heartbeat
+when the database batch fails.
+
+The tests create the two tables from `data/pjx_database_schema.sql`. They use
+the real column limits: `indicator_code VARCHAR(20)` and
+`company_name VARCHAR(255)`. Overlong values cause insert errors without
+changing the schema or truncating any data. Values at the limits are preserved.
+A deferred trigger causes a real commit failure.
+
+Coverage includes rejected records at the start, middle, and end of a batch,
+duplicates, repeated runs, empty runs, failed commits, missing or invalid FRED
+data, and EDGAR's existing form filter and title parsing. Saved rows are checked
+through a new connection after the writer closes its connection.
+
+FRED and feed responses, sleep calls, logging capture, local `.env` loading,
+and heartbeat writes are stubbed. SQL execution, connections, savepoints,
+commits, and rollbacks use psycopg2. No FRED key or SEC request is needed.
+
+Run just these tests with the same disposable database:
+
+```bash
+python -m unittest discover -s tests -p "test_fundamentals_saves.py" -v
+```
+
+Run the combined Binance, news, FRED, and EDGAR suite from the repository root:
+
+```bash
+python -m pip install -r requirements-test.txt
+python -m unittest discover -s tests -v
+```
+
+The existing `.github/workflows/tests.yml` discovers all of these tests and
+runs them against PostgreSQL 16. No new workflow or dependency is needed.
