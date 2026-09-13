@@ -134,3 +134,62 @@ python -m unittest discover -s tests -p "test_profile_whale_saves.py" -v
 ```
 
 The existing full suite command and PostgreSQL 16 workflow also run this group.
+
+## Remaining batch writers and connection recovery
+
+`test_remaining_saves.py` covers FMP profiles, the shared token Twitter writer,
+exchange flows, DEX liquidity, stablecoin metrics, `AIOptimizer`, and `TradeLearner`.
+
+FMP uses a savepoint for each profile. Failed fetches and rejected database rows
+are logged separately. Successful inserts and updates count toward the final
+summary only after commit; a failed commit skips that summary.
+
+The shared Twitter writer uses a savepoint for each `(tweet_id, token)` record.
+Its return value counts new database records. Duplicate pairs do not add to the
+count, and a rejected record does not discard earlier records. Failed commits
+return zero without a saved summary. Cursors close before connections go back
+to the pool. All seven child scrapers use this writer without changing their
+interfaces or source identifiers. Tests run each child through a rejected row
+and check the saved records, source, and count. A cycle test also checks that
+health tracking receives the committed count. Sentiment and volume calculations
+still describe fetched input; they are not counts of saved rows.
+
+Exchange flows use a savepoint for each record, including the duplicate lookup.
+Index creation also uses savepoints, so one failed index does not erase earlier
+successful indexes. A failed final data commit returns zero.
+
+DEX and stablecoin batches remain atomic: either the whole batch commits or the
+whole batch rolls back. After rollback their return value is zero. Tests cover
+rejected rows, failed commits, duplicate records, and successful saves on the
+same connection after failure. The DEX historical calculation is also exercised
+against saved metrics.
+
+The optimizer and learner roll back failed database operations before reusing
+their persistent connections. This includes read error handlers: a failed query
+must not block the next write or the learner's legacy pattern query fallback.
+The learner adds an experience to its replay buffer only after its insert
+commits. A later learning error does not undo an already committed experience.
+
+These tests use table columns from `data/pjx_database_schema.sql`. Actual column
+limits reject bad rows, and deferred constraint triggers fail at commit time.
+For query recovery tests, tables or columns are temporarily renamed inside the
+disposable test schema. The legacy pattern fallback test uses the committed
+schema, which lacks the newer regime columns expected by the first query.
+A test-only missing column causes an exchange index failure.
+
+FMP responses, Twitter setup and sentiment helpers, health tracking, pool handoff,
+and learning calculations are stubbed. SQL execution, savepoints, commits, and
+rollbacks use real psycopg2 connections. No external API calls or model setup are
+required. This suite tests persistence and recovery, not trading performance or
+end-to-end collection. It does not simulate a dropped connection during commit,
+where the caller may be unable to tell whether the server committed the work.
+
+Run this group with the disposable database configured above:
+
+```bash
+python -m unittest discover -s tests -p "test_remaining_saves.py" -v
+```
+
+The existing full suite command discovers this file automatically. The existing
+PostgreSQL 16 workflow and `requirements-test.txt` are sufficient; this change
+adds no dependencies or workflow files.
